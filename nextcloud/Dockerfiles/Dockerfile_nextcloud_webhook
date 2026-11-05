@@ -1,0 +1,69 @@
+ARG IMAGE_VERSION
+FROM nextcloud:${IMAGE_VERSION}
+
+# Remove Apache startup - not needed
+RUN rm -f /usr/local/bin/apache2-foreground
+
+# Install minimal tools
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        jq \
+        nano \
+    && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------------------------------------
+# Create the 'webhook-worker.sh' runner script
+# -----------------------------------------------------------------------------
+# Hard coding the 'webhook-worker.sh' script into Dockerfile allows for mobility
+#   *  Only one file (this Dockerfile) is required to spin up this container
+RUN cat <<'EOF' > /webhook-worker.sh
+#!/bin/bash
+
+TS=$(date +"%Y-%m-%d %I:%M:%S%p")
+
+echo "[${TS}] Starting webhook worker loop..."
+
+set -o pipefail
+while true; do
+    stdbuf -oL -eL php occ background-job:worker -v -t 60 "OCA\WebhookListeners\BackgroundJobs\WebhookCall" \
+        | grep --line-buffered -E "Running job|has finished|Arguments|Reserved at"
+    echo "$(date +%s)" > /var/www/html/data/.webhook_last_run
+done
+EOF
+
+RUN chmod +x /webhook-worker.sh
+
+# -----------------------------------------------------------------------------
+# Create the 'healthcheck.sh' runner script
+# -----------------------------------------------------------------------------
+RUN cat <<'EOF' > /healthcheck.sh
+#!/bin/bash
+
+MARKER="/var/www/html/data/.webhook_last_run"
+
+if [ ! -f "$MARKER" ]; then
+    echo "Webhook worker marker file missing"
+    exit 1
+fi
+
+LAST_RUN_EPOCH=$(cat "$MARKER")
+NOW_EPOCH=$(date +%s)
+
+DIFF=$((NOW_EPOCH - LAST_RUN_EPOCH))
+
+# Worker loops continuously (-t 60 timeout per job); allow some slack
+if [ $DIFF -gt 300 ]; then
+    echo "Webhook worker has not run recently"
+    exit 1
+fi
+
+echo "Webhook worker OK (last run: $LAST_RUN_EPOCH)"
+exit 0
+EOF
+
+RUN chmod +x /healthcheck.sh
+
+# Run container as www-data (UID 33)
+USER www-data
+
+CMD ["/webhook-worker.sh"]

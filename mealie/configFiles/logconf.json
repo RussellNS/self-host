@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "formatters": {
+    "json": {
+      "()": "mealie_json_formatter.JsonFormatter",
+      "datefmt": "%Y-%m-%dT%H:%M:%S"
+    }
+  },
+  "handlers": {
+    "stderr": {
+      "class": "logging.StreamHandler",
+      "level": "WARNING",
+      "formatter": "json",
+      "stream": "ext://sys.stderr"
+    },
+    "stdout": {
+      "class": "logging.StreamHandler",
+      "level": "${LOG_LEVEL}",
+      "formatter": "json",
+      "stream": "ext://sys.stdout"
+    },
+    "file": {
+      "class": "logging.handlers.RotatingFileHandler",
+      "level": "DEBUG",
+      "formatter": "json",
+      "filename": "${DATA_DIR}/mealie.log",
+      "maxBytes": 10000000,
+      "backupCount": 3
+    }
+  },
+  "loggers": {
+    "root": {
+      "level": "${LOG_LEVEL}",
+      "handlers": ["stderr", "file", "stdout"]
+    },
+    "uvicorn.error": {
+      "handlers": ["stderr", "file", "stdout"],
+      "level": "${LOG_LEVEL}",
+      "propagate": false
+    },
+    "uvicorn.access": {
+      "handlers": ["file", "stdout"],
+      "level": "${LOG_LEVEL}",
+      "propagate": false
+    }
+  }
+}

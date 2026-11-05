@@ -1,0 +1,42 @@
+# Check this website for new images:
+#   *  https://github.com/windmill-labs/windmill/releases
+#
+# For Enterprise Edition, use:
+#   *  ghcr.io/windmill-labs/windmill-ee:main
+#
+# Extends the base Windmill image with Chromium baked in at build time,
+# for the 'worker-reports' worker group. Avoids installing it via an
+# init_bash script, which pulls in systemd as a dependency and fails to
+# configure inside the worker's PID-isolated runtime, causing crash loops.
+ARG IMAGE_VERSION
+FROM ghcr.io/windmill-labs/windmill:${IMAGE_VERSION}
+
+# systemd is pulled in as a hard dependency of the chromium package chain
+# (via libpam-systemd), not just a recommendation, so --no-install-recommends
+# alone doesn't avoid it. Its postinst script fails during `docker build`
+# with "Failed to copy permissions from /etc/group" -- a known shadow-utils
+# bug on overlay-based build filesystems, unrelated to container detection.
+#
+# Work around it by pre-satisfying the systemd dependency with an empty
+# equivs stub package matching the exact candidate version, so apt never
+# installs (and never runs the postinst of) the real systemd package.
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends equivs && \
+    SYSTEMD_VER=$(apt-cache policy systemd | awk '/Candidate:/{print $2}') && \
+    mkdir -p /tmp/equivs && cd /tmp/equivs && \
+    for pkg in systemd systemd-sysv; do \
+        equivs-control "$pkg" && \
+        sed -i "s/^Package: .*/Package: $pkg/" "$pkg" && \
+        sed -i "s/^# Version: .*/Version: $SYSTEMD_VER/" "$pkg" && \
+        equivs-build "$pkg"; \
+    done && \
+    dpkg -i /tmp/equivs/*.deb && \
+    apt-mark hold systemd systemd-sysv && \
+    apt-get remove -y --purge equivs && \
+    cd / && rm -rf /tmp/equivs
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        chromium && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*

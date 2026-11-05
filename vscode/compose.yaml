@@ -1,0 +1,240 @@
+# NETWORK INFO
+# The 'networks:' section assigns a service to a user created network.
+#
+# In order for this 'docker-compose.yml' file to work, the following Docker network
+# must be created before hand:
+#
+#   Use this for QNAP NAS devices
+#   docker network create -d qnet --ipam-driver=qnet --ipam-opt=iface=eth4 --subnet=198.51.100.0/24 --gateway 198.51.100.1 macvlan_net --opt=iface=eth4
+#     *  Reference: https://qnap-dev.github.io/container-station-api/qnet.html
+#
+#   Use this for standard Docker
+#   docker network create -d macvlan --subnet=198.51.100.0/24 --gateway=198.51.100.1 -o parent=ens33 macvlan_net
+#                            |     |          |           |           |        |           |   | |         |
+#                            +-----+          +-----------+           +--------+           +---+ +----+----+
+#                               |                   |                      |                 |        |
+#   This needs to match the ----+                   |                      |                 |        |
+#   driver used for the                             |                      |                 |        |
+#   network (the default driver                     |                      |                 |        |
+#   for macvlan networks in Docker                  |                      |                 |        |
+#   is 'macvlan', the default                       |                      |                 |        |
+#   for QNAP NAS is 'qnet'.                         |                      |                 |        |
+#                                                   |                      |                 |        |
+#   This needs to match the subnet in  -------------+                      |                 |        |
+#   your environment.                                                      |                 |        |
+#                                                                          |                 |        |
+#   This needs to match the IP of your ------------------------------------+                 |        |
+#   gateway.                                                                                 |        |
+#                                                                                            |        |
+#   This needs to match the name of    ------------------------------------------------------+        |
+#   your interface (NIC).                                                                             |
+#                                                                                                     |
+#   This can be any user assigned ------------------+-------------------------------------------------+
+#   value, but both of these need                   |
+#   to match.                                       |
+#                                                   |
+#      +--------------------------------------------+
+#      |
+# +----+----+
+# |         |
+networks:
+  macvlan_net:
+    external: true
+
+volumes:
+  server-data:
+  user-data:
+  cli-data:
+  extensions:
+  nginx-logs:
+
+
+x-all-services: &all-svcs
+  restart: unless-stopped
+  pull_policy: always
+#  dns_search: example.com
+  dns:
+    - 198.51.100.10
+
+x-all-health: &all-health
+  interval: 10m
+  timeout: 10s
+  retries: 5
+  start_period: 2m
+  start_interval: 10s
+
+services:
+  nginx:
+    <<: *all-svcs
+#    image: nginx:stable
+    build:
+      context: .
+#      dockerfile: ./Dockerfiles/Dockerfile_nginx-v1.28_stable-alpine
+      dockerfile: ./Dockerfiles/Dockerfile_nginx-v1.30_stable-alpine
+      args:
+        IMAGE_VERSION: ${NGINX_VERSION}
+        LUA_VERSION: ${LUA_BOUNCER_VERSION}
+        MAXMIND_KEY: ${MAXMIND_KEY}
+    container_name: vscode_nginx
+    hostname: vscode-nginx
+    networks:
+      default:
+      macvlan_net:
+        ipv4_address: 192.0.2.60
+        # Docker generated MAC addresses are "02:42" + the HEX value of
+        # the IP address.  For example:
+        #   * IP Address:        "172.17.0.2"
+        #   * HEX Value:        "ac.11.00.02"
+        #   * Docker MAC: "02:42:ac:11:00:02"
+        mac_address: 02:42:0A:0A:05:41
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      - TZ=US/Central
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted with 'docker-compose down -v')
+      - nginx-logs:/var/log/nginx:rw
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+#      - /path/to/volumes/vscode-server:/config:rw
+      - ./configFiles/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./configFiles/crowdsec-nginx-bouncer.conf:/etc/crowdsec/bouncers/crowdsec-nginx-bouncer.conf:ro
+      - ./configFiles/htpasswd:/etc/nginx/.htpasswd:ro
+      # Files used for SSL/TLS CERTS
+      - /path/to/ssl/n8n.example.com_cert.pem:/etc/ssl/example.com.pem:ro
+      - /path/to/ssl/n8n.example.com_fullchain.pem:/etc/ssl/example.com_fullchain.pem:ro
+      - /path/to/ssl/n8n.example.com_privkey.pem:/etc/ssl/example.com.key:ro
+
+# ----------
+
+  log-api:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_log-api
+      args:
+        IMAGE_VERSION: ${PYTHON_VERSION}
+    container_name: vscode_log-api
+    hostname: vscode-logapi
+    networks:
+      default:
+      macvlan_net:
+        ipv4_address: 192.0.2.61
+        # Docker generated MAC addresses are "02:42" + the HEX value of
+        # the IP address.  For example:
+        #   * IP Address:        "172.17.0.2"
+        #   * HEX Value:        "ac.11.00.02"
+        #   * Docker MAC: "02:42:ac:11:00:02"
+        mac_address: 02:42:0A:0A:05:3D
+    environment:
+      - LOG_API_TOKEN=${LOG_API_TOKEN}
+      - LOG_API_PORT=8090
+      - LOG_API_ENABLED_FILES=nginx_access
+    healthcheck:
+      test: ["CMD-SHELL", "python3 /app/health_check.py"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted with 'docker-compose down -v')
+      - nginx-logs:/var/log/nginx:ro
+
+# ----------
+
+  crowdsec:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_crowdsec
+      args:
+        IMAGE_VERSION: ${CROWDSEC_VERSION}
+    container_name: vscode_crowdsec
+    hostname: vscode-agent
+    depends_on:
+      nginx:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ}
+      DISABLE_LOCAL_API: "true"
+      AGENT_USERNAME: ${AGENT_USERNAME}
+      AGENT_PASSWORD: ${AGENT_PASSWORD}
+      LOCAL_API_URL: http://lapi.example.com:8080
+      COLLECTIONS: "crowdsecurity/nginx crowdsecurity/appsec-generic-rules crowdsecurity/appsec-virtual-patching"
+    healthcheck:
+#      test: ["CMD-SHELL", "wget --spider --quiet --tries=1 --timeout=5 http://localhost:8080/health || exit 1"]
+      test: ["CMD-SHELL", "cscli lapi status || exit 1"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING or MONITORING - gets deleted with 'docker-compose down -v'
+      - nginx-logs:/var/log/nginx:ro
+      # Volumes used for PERSISTANT DATA - NOT TESTING - these do not get deleted, even with '-v'
+      - ./vols/crowdsec_data:/etc/crowdsec/
+      - ./vols/crowdsec_db:/var/lib/crowdsec/data/
+      # Files used for PERSISTANT DATA - Docker friendly - mount more-specific paths after less-specific
+#      - ./configFiles/acquis.yaml:/etc/crowdsec/acquis.yaml:ro
+      - ./configFiles/acquis-nginx-log.yaml:/etc/crowdsec/acquis.d/acquis-nginx-log.yaml:ro
+      - ./configFiles/acquis-appsec-waf.yaml:/etc/crowdsec/acquis.d/acquis-appsec-waf.yaml:ro
+      - ./configFiles/webFiles/home-whitelists.yaml:/etc/crowdsec/parsers/s02-enrich/home-whitelists.yaml:ro
+
+
+
+  # To check for the latest version of VS Code:
+  #   *  https://code.visualstudio.com/download
+  #      NOTE: The version is in a banner at the top of the page.
+  #            Click the version link for release notes.
+  #
+  # To check inside a VS Code (bash) terminal window, run the script below:
+  #
+  #      INSTALLED=$(code --version | head -n1) && \
+  #      LATEST=$(curl -s https://update.code.visualstudio.com/api/update/linux-deb-x64/stable/latest | jq -r '.name') && \
+  #      echo "Installed: $INSTALLED | Latest: $LATEST"
+  app:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_vscode
+      args:
+        IMAGE_VERSION: ${DEBIAN_VERSION}
+      pull: true
+    container_name: vscode_app
+    hostname: vscode_app
+    environment:
+      - TZ=US/Central
+
+#      - DOCKER_MODS=linuxserver/mods:code-server-powershell|linuxserver/mods:code-server-python3
+    command: |
+      sh -c '
+        echo "Pausing for the network stack to start...";
+        sleep 5;
+        exec code serve-web \
+          --host 0.0.0.0 \
+          --port 8080 \
+          --accept-server-license-terms \
+          --without-connection-token
+        '
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -is http://localhost:8080/ | grep -i "200 OK"']
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted with 'docker-compose down -v')
+#      - server-data:/vscode/server-data
+#      - user-data:/vscode/user-data
+#      - cli-data:/vscode/cli-data
+#      - extensions:/vscode/extensions
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+#      - /path/to/volumes/vscode_web/vscode-server:/home/vscodeuser/.vscode-server:rw
+#      - /path/to/volumes/vscode_web/user-config:/home/vscodeuser/.config:rw
+      - /path/to/scripts:/home/vscodeuser/workspace:rw
+      - /path/to/volumes/openclaw_config/agents/main/agent/workshop-skills:/home/vscodeuser/workspace/OpenClaw/skills:rw
+      - /share/Private/ssl:/var/ssl:ro
+      # NOTE: VS Code runs under a user context, and it uses multiple directories under that user's home directory
+      #       to store config data.  This creates 1 of 2 volume mounting strategies:
+      #         *  Mount the entire user's home directory for persistence
+      #            This is the "swat a fly with a hammer" approach, but it also maintains persistence on unexpected
+      #            files, like GitHub login info.  This approach makes keeping your VS Code config across container
+      #            restarts easy.
+      #         *  Mount individual files/directories in the user's home directory for persistence
+      #            This is the Docker native approach.  Config info that's desired is mounted and maintained, while
+      #            config info that might get updated with a new version of VS Code is updated with the container.
+      - /path/to/volumes/vscode_web:/home/vscodeuser:rw

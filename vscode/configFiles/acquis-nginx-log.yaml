@@ -1,0 +1,5 @@
+source: file
+filenames:
+  - /var/log/nginx/nginx_crowdsec.log
+labels:
+  type: nginx

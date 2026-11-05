@@ -1,0 +1,189 @@
+# NETWORK INFO
+# The 'networks:' section assigns a service to a user created network.
+#
+# In order for this 'docker-compose.yml' file to work, the following Docker network
+# must be created before hand:
+#
+#   Use this for QNAP NAS devices
+#   docker network create -d qnet --ipam-driver=qnet --ipam-opt=iface=eth4 --subnet=198.51.100.0/24 --gateway 198.51.100.1 macvlan_net --opt=iface=eth4
+#     *  Reference: https://qnap-dev.github.io/container-station-api/qnet.html
+#
+#   Use this for standard Docker
+#   docker network create -d macvlan --subnet=198.51.100.0/24 --gateway=198.51.100.1 -o parent=ens33 macvlan_net
+#                            |     |          |           |           |        |           |   | |         |
+#                            +-----+          +-----------+           +--------+           +---+ +----+----+
+#                               |                   |                      |                 |        |
+#   This needs to match the ----+                   |                      |                 |        |
+#   driver used for the                             |                      |                 |        |
+#   network (the default driver                     |                      |                 |        |
+#   for macvlan networks in Docker                  |                      |                 |        |
+#   is 'macvlan', the default                       |                      |                 |        |
+#   for QNAP NAS is 'qnet'.                         |                      |                 |        |
+#                                                   |                      |                 |        |
+#   This needs to match the subnet in  -------------+                      |                 |        |
+#   your environment.                                                      |                 |        |
+#                                                                          |                 |        |
+#   This needs to match the IP of your ------------------------------------+                 |        |
+#   gateway.                                                                                 |        |
+#                                                                                            |        |
+#   This needs to match the name of    ------------------------------------------------------+        |
+#   your interface (NIC).                                                                             |
+#                                                                                                     |
+#   This can be any user assigned ------------------+-------------------------------------------------+
+#   value, but both of these need                   |
+#   to match.                                       |
+#                                                   |
+#      +--------------------------------------------+
+#      |
+# +----+----+
+# |         |
+networks:
+  macvlan_net:
+    external: true
+
+#volumes:
+#  ollama_data:
+#  ollama_web:
+#  ollama_nginx:
+
+x-all-health: &all-health
+  interval: 10m
+  timeout: 10s
+  retries: 5
+  start_period: 2m
+  start_interval: 10s
+
+services:
+  nginx:
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_nginx-v1.30_stable-alpine
+      args:
+        IMAGE_VERSION: ${NGINX_VERSION}
+    container_name: ollama_nginx
+    hostname: ollama-nginx
+    restart: unless-stopped
+    networks:
+      default:
+      # Docker generated MAC addresses are "02:42" + the HEX value of
+      # the IP address.  For example:
+      #   * IP Address:        "172.17.0.2"
+      #   * HEX Value:        "ac.11.00.02"
+      #   * Docker MAC: "02:42:ac:11:00:02"
+      macvlan_net:
+        ipv4_address: 192.0.2.45
+        mac_address: 02:42:0A:0A:05:2D
+#    ports:
+#      - "80:80"
+#      - "443:443"
+    depends_on:
+      open-webui:
+        condition: service_healthy
+    environment:
+      - TZ=US/Central
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted with 'docker-compose down -v')
+#      - ollama_nginx:/???
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+#      - ./webFiles/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./configFiles/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Files used for SSL/TLS CERTS
+#      - /path/to/ssl/cert.pem:/etc/ssl/example.com.pem:ro
+#      - /path/to/ssl/privkey.pem:/etc/ssl/example.com.key:ro
+#      - /path/to/ssl/fullchain.pem:/etc/ssl/example.com.fullchain.pem:ro
+      - /path/to/ssl/n8n.cert.pem:/etc/ssl/example.com_cert.pem:ro
+      - /path/to/ssl/n8n.example.com_privkey.pem:/etc/ssl/example.com.key:ro
+      - /path/to/ssl/n8n.example.com_fullchain.pem:/etc/ssl/example.com.fullchain.pem:ro
+
+
+
+  open-webui:
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_open-webui
+      args:
+        IMAGE_VERSION: ${OPENWEBUI_VERSION}
+    container_name: ollama_open-webui
+    hostname: ollama-webui
+    restart: unless-stopped
+    # Using 'ports:' vs 'expose:'
+    #   *  'ports:'   presents the ports externally (usually addressed as host_ip:port)
+    #   *  'expose:'  presents the ports internally (used for container to container traffic)
+    expose:
+      - "3000:8080"
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      - TZ=US/Central
+      - LANG=en_US.UTF-8
+      - LC_ALL=en_US.UTF-8
+      - OLLAMA_BASE_URL=http://ollama_app:11434
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Volumes used for TESTING (they get deleted)
+#      - ollama_web:/app/backend/data
+      # Volumes used for PERSISTANT DATA (NOT TESTING)
+      - /path/to/volumes/ollama_data:/app/backend/data
+
+
+
+  app:
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_ollama
+      args:
+        IMAGE_VERSION: ${OLLAMA_VERSION}
+    container_name: ollama_app
+    hostname: ollama-app
+    restart: unless-stopped
+    networks:
+      default:
+      # Docker generated MAC addresses are "02:42" + the HEX value of
+      # the IP address.  For example:
+      #   * IP Address:        "172.17.0.2"
+      #   * HEX Value:        "ac.11.00.02"
+      #   * Docker MAC: "02:42:ac:11:00:02"
+      macvlan_net:
+        ipv4_address: 192.0.2.46
+        mac_address: 02:42:0A:0A:05:2E
+    ports:
+      - "11434:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            capabilities: ["gpu"]
+            count: all
+    environment:
+      - TZ=US/Central
+      - LANG=en_US.UTF-8
+      - LC_ALL=en_US.UTF-8
+      - OLLAMA_KEEP_ALIVE=30m
+      - OLLAMA_HOST=0.0.0.0
+      # Ollama Context Length (number of tokens, not KB, MB, etc.)
+#      - OLLAMA_CONTEXT_LENGTH=8192
+#      - OLLAMA_CONTEXT_LENGTH=16384
+      - OLLAMA_CONTEXT_LENGTH=32768
+#      - OLLAMA_CONTEXT_LENGTH=65536
+      - OLLAMA_MAX_LOADED_MODELS=1
+      # DEBUG
+#      - OLLAMA_DEBUG=1
+    healthcheck:
+#      test:  [ "CMD-SHELL", "bash", "-c", "{ printf >&3 'GET / HTTP/1.0\\r\\n\\r\\n'; cat <&3; } 3<>/dev/tcp/localhost/11434 | grep -iq 'Ollama is running' || exit 1"  ]
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags > /dev/null || exit 1"]
+#      test: ["CMD-SHELL", "/healthcheck.sh"]
+      <<: *all-health
+      interval: 60s
+      timeout: 2m
+    volumes:
+      # Volumes used for TESTING (they get deleted)
+#      - ollama_data:/root/.ollama
+      # Volumes used for PERSISTANT DATA (NOT TESTING)
+      - /path/to/volumes/ollama_data:/root/.ollama

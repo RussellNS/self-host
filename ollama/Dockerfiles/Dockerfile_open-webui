@@ -1,0 +1,4 @@
+# To check release version:
+#   *  https://github.com/open-webui/open-webui
+ARG IMAGE_VERSION
+FROM ghcr.io/open-webui/open-webui:${IMAGE_VERSION}

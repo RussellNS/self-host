@@ -1,0 +1,488 @@
+# NETWORK INFO
+# The 'networks:' section assigns a service to a user created network.
+#
+# In order for this 'docker-compose.yml' file to work, the following Docker network
+# must be created before hand:
+#
+#   Use this for QNAP NAS devices
+#   docker network create -d qnet --ipam-driver=qnet --ipam-opt=iface=eth4 --subnet=198.51.100.0/24 --gateway 198.51.100.1 macvlan_net --opt=iface=eth4
+#     *  Reference: https://qnap-dev.github.io/container-station-api/qnet.html
+#
+#   Use this for standard Docker
+#   docker network create -d macvlan --subnet=198.51.100.0/24 --gateway=198.51.100.1 -o parent=ens33 macvlan_net
+#                            |     |          |           |           |        |           |   | |         |
+#                            +-----+          +-----------+           +--------+           +---+ +----+----+
+#                               |                   |                      |                 |        |
+#   This needs to match the ----+                   |                      |                 |        |
+#   driver used for the                             |                      |                 |        |
+#   network (the default driver                     |                      |                 |        |
+#   for macvlan networks in Docker                  |                      |                 |        |
+#   is 'macvlan', the default                       |                      |                 |        |
+#   for QNAP NAS is 'qnet'.                         |                      |                 |        |
+#                                                   |                      |                 |        |
+#   This needs to match the subnet in  -------------+                      |                 |        |
+#   your environment.                                                      |                 |        |
+#                                                                          |                 |        |
+#   This needs to match the IP of your ------------------------------------+                 |        |
+#   gateway.                                                                                 |        |
+#                                                                                            |        |
+#   This needs to match the name of    ------------------------------------------------------+        |
+#   your interface (NIC).                                                                             |
+#                                                                                                     |
+#   This can be any user assigned ------------------+-------------------------------------------------+
+#   value, but both of these need                   |
+#   to match.                                       |
+#                                                   |
+#      +--------------------------------------------+
+#      |
+# +----+----+
+# |         |
+networks:
+  macvlan_net:
+    external: true
+
+
+# ----------
+
+
+volumes:
+#  windmill_db:
+#  windmill_index:
+  windmill_worker_cache:
+  windmill_worker_logs:
+  windmill_worker_locks:
+  windmill_lsp_cache:
+  windmill_dind:
+
+
+# ----------
+
+
+x-all-services: &all-svcs
+  restart: unless-stopped
+#  dns_search: example.com
+  dns:
+    - 198.51.100.10
+
+x-all-health: &all-health
+  interval: 10m
+  timeout: 10s
+  retries: 5
+  start_period: 10m
+  start_interval: 10s
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "${LOG_MAX_SIZE:-20m}"
+    max-file: "${LOG_MAX_FILE:-10}"
+    compress: "true"
+
+
+# ----------
+
+
+services:
+  nginx:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_nginx-v1.30_stable-alpine
+      args:
+        IMAGE_VERSION: ${NGINX_VERSION}
+    container_name: windmill_nginx
+    hostname: windmill-nginx
+    networks:
+      default:
+      macvlan_net:
+        ipv4_address: 192.0.2.101
+        # Docker generated MAC addresses are "02:42" + the HEX value of
+        # the IP address.  For example:
+        #   * IP Address:        "172.17.0.2"
+        #   * HEX Value:        "ac.11.00.02"
+        #   * Docker MAC: "02:42:ac:11:00:02"
+        mac_address: 02:42:0A:0A:05:65
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      # ENV variables defined in a '.env' file.  View with 'ls -lha'.
+      # AUTOMATIC LOADING
+      # If a '.env' file is in the same directory as the 'compose.yaml' file, it will
+      # automatically be loaded.
+      # USAGE
+      # Variables in this file can be referenced in the 'compose.yaml' file anywhere,
+      # not just in the 'environment:' section.  Referencing works like this:
+      #   *  ${variable_name}
+      #   *  ${variable_name:-default_value}
+      # NOTE: Putting ENV values in a '.env' file helps to obfuscate passwords from the 'compose.yaml'.
+      #       Doing it this way allows for seeking online help without
+      #       disclosing passwords.
+      TZ: ${TZ}
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t"]
+      <<: *all-health
+    volumes:
+      # Volumes used for NON-PERSISTENT (gets deleted with 'docker-compose down -v')
+#      - nginx-logs:/var/log/nginx:rw
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+      - ./configFiles/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Files used for SSL/TLS CERTS
+      - /path/to/ssl/cert.pem:/etc/ssl/example.com.pem:ro
+      - /path/to/ssl/privkey.pem:/etc/ssl/example.com.key:ro
+      - /path/to/ssl/fullchain.pem:/etc/ssl/example.com.fullchain.pem:ro
+
+
+
+  server:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_windmill
+      args:
+        IMAGE_VERSION: ${WINDMILL_VERSION}
+    hostname: windmill-web
+    container_name: windmill_server
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      default:
+#      macvlan_net:
+#        ipv4_address: 192.0.2.102
+#        # Docker generated MAC addresses are "02:42" + the HEX value of
+#        # the IP address.  For example:
+#        #   * IP Address:        "172.17.0.2"
+#        #   * HEX Value:        "ac.11.00.02"
+#        #   * Docker MAC: "02:42:ac:11:00:02"
+#        mac_address: 02:42:0A:0A:05:66
+    environment:
+      TZ: ${TZ}
+      MODE: server
+      DATABASE_URL: ${DATABASE_URL}
+      LSP_URL: http://windmill_lsp:3001
+      ALLOW_PRIVATE_AI_BASE_URLS: true
+    logging:
+      <<: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/health/status || exit 1"]
+      <<: *all-health
+    volumes:
+      # Volumes used for NON-PERSISTENT (gets deleted with 'docker-compose down -v')
+      - windmill_worker_logs:/tmp/windmill/logs
+
+
+
+  db:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_postgres
+      args:
+        IMAGE_VERSION: ${POSTGRES_VERSION}
+    container_name: windmill_db
+    hostname: windmill-db
+    environment:
+      TZ: ${TZ}
+      PGDATA: /var/lib/postgresql/data
+      POSTGRES_USER: postgres
+      POSTGRES_DB: windmill
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_MAX_CONNECTIONS: 200
+    logging:
+      <<: *default-logging
+    command: postgres -c max_connections=200
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -d windmill"]
+      <<: *all-health
+    volumes:
+      # Volumes used for NON-PERSISTENT (gets deleted with 'docker-compose down -v')
+#      - windmill_db:/var/lib/postgresql/data
+      # Volumes used for PERSISTANT DATA (NOT TESTING)
+      - /path/to/volumes/windmill_db:/var/lib/postgresql/data:rw
+
+
+
+  redis:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_redis_alpine
+      args:
+        IMAGE_VERSION: ${REDIS_VERSION}
+    container_name: windmill_redis
+    hostname: windmill-redis
+    environment:
+      TZ: ${TZ}
+      REDISCLI_AUTH: ${REDIS_PASS}
+    healthcheck:
+#      test: ["CMD-SHELL", "redis-cli ping"]
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASS} --no-auth-warning ping"]
+      <<: *all-health
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASS}
+      --appendonly yes
+      --appendfsync always
+      --auto-aof-rewrite-percentage 100
+      --auto-aof-rewrite-min-size 64mb
+      --aof-use-rdb-preamble yes
+      --maxmemory 512mb
+      --maxmemory-policy noeviction
+      --save 900 1
+      --save 300 10
+    volumes:
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+      - /path/to/volumes/windmill_redis:/data:rw
+
+
+  worker:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_windmill
+      args:
+        IMAGE_VERSION: ${WINDMILL_VERSION}
+#    container_name: windmill_worker
+    hostname: wnd-worker
+    deploy:
+      replicas: 5
+      resources:
+        limits:
+          memory: 2G
+    # Uncomment to enable PID namespace isolation (recommended for security)
+    # Requires privileged mode for --mount-proc flag
+    # See: https://www.windmill.dev/docs/advanced/security_isolation
+    privileged: true
+    depends_on:
+      db:
+        condition: service_healthy
+      server:
+        condition: service_healthy
+#      dind:
+#        condition: service_healthy
+    environment:
+      TZ: ${TZ}
+      DATABASE_URL: ${DATABASE_URL}
+      MODE: worker
+      WORKER_GROUP: default
+      # If running with non-root/non-windmill UID (e.g., user: "1001:1001"),
+      # add: - HOME=/tmp
+      FAVOR_UNSHARE_PID: true
+      # Connect to the dind sidecar instead of the host Docker socket
+#      DOCKER_HOST: tcp://dind:2375
+    logging:
+      <<: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://windmill_server:8000/api/health/status || exit 1"]
+      <<: *all-health
+    # to mount the worker folder to debug, KEEP_JOB_DIR=true and mount /tmp/windmill
+    volumes:
+      # Volumes used for NON-PERSISTENT (gets deleted with 'docker-compose down -v')
+      - windmill_worker_cache:/tmp/windmill/cache
+      - windmill_worker_logs:/tmp/windmill/logs
+      - windmill_worker_locks:/tmp/windmill/locks
+      ## WARNING: mounting the host Docker socket grants user scripts full access to
+      ## the host Docker daemon, enabling host filesystem access and privilege escalation.
+      ## Only use this if you fully trust all users who can run scripts.
+      ## To use it, remove the DOCKER_HOST env var and dind depends_on above,
+      ## and uncomment the line below:
+      # - /var/run/docker.sock:/var/run/docker.sock
+
+
+
+  worker_expenses:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_windmill
+      args:
+        IMAGE_VERSION: ${WINDMILL_VERSION}
+    container_name: windmill_worker-expenses
+    hostname: wnd-expenses
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          memory: 2G
+    # Uncomment to enable PID namespace isolation (recommended for security)
+    # Requires privileged mode for --mount-proc flag
+    # See: https://www.windmill.dev/docs/advanced/security_isolation
+    privileged: true
+    depends_on:
+      db:
+        condition: service_healthy
+      server:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ}
+      DATABASE_URL: ${DATABASE_URL}
+      MODE: worker
+      WORKER_TAGS: expenses
+      WORKER_GROUP: expenses
+      # If running with non-root/non-windmill UID (e.g., user: "1001:1001"),
+      # add: - HOME=/tmp
+      FAVOR_UNSHARE_PID: true
+    logging:
+      <<: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://windmill_server:8000/api/health/status || exit 1"]
+      <<: *all-health
+    # to mount the worker folder to debug, KEEP_JOB_DIR=true and mount /tmp/windmill
+    volumes:
+      # Volumes used for NON-PERSISTENT (gets deleted with 'docker-compose down -v')
+      - windmill_worker_cache:/tmp/windmill/cache
+      - windmill_worker_logs:/tmp/windmill/logs
+      - windmill_worker_locks:/tmp/windmill/locks
+
+
+
+  ## This worker is specialized for "native" jobs. Native jobs run in-process and thus are much more lightweight than other jobs
+  worker-native:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_windmill
+      args:
+        IMAGE_VERSION: ${WINDMILL_VERSION}
+    container_name: windmill_worker-native
+    hostname: wnd-worker-nat
+    deploy:
+#      replicas: 1
+      resources:
+        limits:
+          memory: 2G
+    depends_on:
+      db:
+        condition: service_healthy
+      server:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ}
+      DATABASE_URL: ${DATABASE_URL}
+      MODE: worker
+      WORKER_GROUP: native
+      NATIVE_MODE: true
+      SLEEP_QUEUE: 200
+      FAVOR_UNSHARE_PID: true
+    logging:
+      <<: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://windmill_server:8000/api/health/status || exit 1"]
+      <<: *all-health
+    # to mount the worker folder to debug, KEEP_JOB_DIR=true and mount /tmp/windmill
+    volumes:
+      # Volumes used for NON-PERSISTENT (gets deleted with 'docker-compose down -v')
+      - windmill_worker_logs:/tmp/windmill/logs
+      - windmill_worker_locks:/tmp/windmill/locks
+
+
+
+  # Combined extra services: LSP, Real-time Collaboration (EE), and Debugger
+  # Each service can be enabled/disabled via environment variables:
+  #   - ENABLE_LSP=true (default) - Language Server Protocol for code intelligence
+  #   - ENABLE_MULTIPLAYER=false - Real-time collaboration (Enterprise Edition)
+  #   - ENABLE_DEBUGGER=false - Interactive debugging via DAP WebSocket
+  lsp:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_windmill_lsp
+      args:
+        IMAGE_VERSION: ${EXTRAS_VERSION}
+    container_name: windmill_lsp
+    hostname: windmill-lsp
+    depends_on:
+      db:
+        condition: service_healthy
+      server:
+        condition: service_healthy
+    expose:
+      - 3001 # LSP
+      - 3002 # Multiplayer
+      - 3003 # Debugger
+    environment:
+      - ENABLE_LSP=true # Language Server Protocol (LSP) for code intelligence
+      - ENABLE_MULTIPLAYER=false # Set to true to enable real-time collaboration (Enterprise Edition)
+      - ENABLE_DEBUGGER=true # Set to true to enable debugger
+      - DEBUGGER_PORT=3003 # Debugger service port
+      - ENABLE_NSJAIL=false # Set to true for nsjail sandboxing (requires privileged: true)
+      - REQUIRE_SIGNED_DEBUG_REQUESTS=false # Set to true to require JWT tokens for debug sessions
+      - WINDMILL_BASE_URL=http://windmill_server:8000
+    logging:
+      <<: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3001/health || exit 1"]
+      <<: *all-health
+    volumes:
+      # Volumes used for NON-PERSISTENT (gets deleted with 'docker-compose down -v')
+      - windmill_lsp_cache:/pyls/.cache
+
+
+  # This worker is specialized for reports or scraping jobs.
+  # It is assigned the "reports" worker group which has an init script that installs
+  # chromium and can be targeted by using the "chromium" worker tag.
+  worker-reports:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_windmill_reports
+      args:
+        IMAGE_VERSION: ${WINDMILL_VERSION}
+#    pull_policy: always
+    container_name: windmill_worker-reports
+    hostname: wnd-worker-rpts
+    deploy:
+#      replicas: 1
+      resources:
+        limits:
+          # for GB, use syntax '2Gi'
+          memory: 2048M
+#    # Uncomment to enable PID namespace isolation (recommended for security)
+#    # Requires privileged mode for --mount-proc flag
+#    # See: https://www.windmill.dev/docs/advanced/security_isolation
+    privileged: true
+    environment:
+      TZ: ${TZ}
+      DATABASE_URL: ${DATABASE_URL}
+      MODE: worker
+      WORKER_GROUP: reports
+      FAVOR_UNSHARE_PID: true
+    depends_on:
+      db:
+        condition: service_healthy
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://windmill_server:8000/api/health/status || exit 1"]
+      <<: *all-health
+    # to mount the worker folder to debug, KEEP_JOB_DIR=true and mount /tmp/windmill
+    volumes:
+      # Volumes used for NON-PERSISTENT (gets deleted with 'docker-compose down -v')
+      - windmill_worker_cache:/tmp/windmill/cache
+      - windmill_worker_logs:/tmp/windmill/logs
+      - windmill_worker_locks:/tmp/windmill/locks
+
+
+
+  # The indexer powers full-text job and log search, an EE feature.
+#  indexer:
+#    deploy:
+#      replicas: 0 # set to 1 to enable full-text job and log search
+#    expose:
+#      - 8002
+#    environment:
+#      - PORT=8002
+#      - DATABASE_URL=${DATABASE_URL}
+#      - MODE=indexer
+#    depends_on:
+#      db:
+#        condition: service_healthy
+#      server:
+#        condition: service_healthy
+#    logging:
+#      <<: *default-logging
+#    volumes:
+      # Volumes used for NON-PERSISTENT (gets deleted with 'docker-compose down -v')
+#      - windmill_index:/tmp/windmill/search
+#      - windmill_worker_logs:/tmp/windmill/logs

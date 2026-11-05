@@ -1,0 +1,48 @@
+# Real secrets and environment files: never commit these.
+# Commit only the sanitized .env.example files.
+.env
+.env.*
+!.env.example
+*.env
+
+# Keys, certificates, and credentials
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+*.kdbx
+id_rsa*
+id_ed25519*
+secrets/
+*.secret
+*.secrets
+credentials*.json
+token*.json
+
+# Runtime data and volumes that compose stacks create
+data/
+volumes/
+db/
+postgres/
+redis/
+models/
+logs/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# Compose overrides that may hold local-only values
+compose.override.yaml
+compose.override.yml
+docker-compose.override.yml
+docker-compose.override.yaml
+
+# Editor and OS clutter
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~

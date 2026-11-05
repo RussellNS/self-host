@@ -1,0 +1,209 @@
+# NETWORK INFO
+# The 'networks:' section assigns a service to a user created network.
+#
+# In order for this 'docker-compose.yml' file to work, the following Docker network
+# must be created before hand:
+#
+#   Use this for QNAP NAS devices
+#   docker network create -d qnet --ipam-driver=qnet --ipam-opt=iface=eth4 --subnet=198.51.100.0/24 --gateway 198.51.100.1 macvlan_net --opt=iface=eth4
+#     *  Reference: https://qnap-dev.github.io/container-station-api/qnet.html
+#
+#   Use this for standard Docker
+#   docker network create -d macvlan --subnet=198.51.100.0/24 --gateway=198.51.100.1 -o parent=ens33 macvlan_net
+#                            |     |          |           |           |        |           |   | |         |
+#                            +-----+          +-----------+           +--------+           +---+ +----+----+
+#                               |                   |                      |                 |        |
+#   This needs to match the ----+                   |                      |                 |        |
+#   driver used for the                             |                      |                 |        |
+#   network (the default driver                     |                      |                 |        |
+#   for macvlan networks in Docker                  |                      |                 |        |
+#   is 'macvlan', the default                       |                      |                 |        |
+#   for QNAP NAS is 'qnet'.                         |                      |                 |        |
+#                                                   |                      |                 |        |
+#   This needs to match the subnet in  -------------+                      |                 |        |
+#   your environment.                                                      |                 |        |
+#                                                                          |                 |        |
+#   This needs to match the IP of your ------------------------------------+                 |        |
+#   gateway.                                                                                 |        |
+#                                                                                            |        |
+#   This needs to match the name of    ------------------------------------------------------+        |
+#   your interface (NIC).                                                                             |
+#                                                                                                     |
+#   This can be any user assigned ------------------+-------------------------------------------------+
+#   value, but both of these need                   |
+#   to match.                                       |
+#                                                   |
+#      +--------------------------------------------+
+#      |
+# +----+----+
+# |         |
+networks:
+  macvlan_net:
+    external: true
+
+volumes:
+  n8n_db:
+  n8n_app:
+  n8n_redis:
+
+x-n8n-service: &n8n-service
+#  image: docker.n8n.io/n8nio/n8n
+  image: n8nio/n8n:1.83.2
+  restart: unless-stopped
+  healthcheck:
+    interval: 10m
+    timeout: 10s
+    retries: 5
+    start_period: 5m
+    start_interval: 10s
+
+x-n8n-env: &n8n-env
+  # OS - OS Environment
+  'TZ': ${TZ}
+  # DB - Database Variables
+  'DB_TYPE': ${DB_TYPE}
+  'DB_POSTGRESDB_HOST': ${DB_HOST}
+  'DB_POSTGRESDB_PORT': ${DB_PORT}
+  'DB_POSTGRESDB_DATABASE': ${DB_NAME}
+  'DB_POSTGRESDB_USER': ${DB_NON_ROOT_USER}
+  'DB_POSTGRESDB_PASSWORD': ${DB_NON_ROOT_PASS}
+  # N8N - App Variables
+  'EXECUTIONS_MODE': queue
+  'QUEUE_BULL_REDIS_HOST': n8n_redis
+  'QUEUE_HEALTH_CHECK_ACTIVE': true
+  'N8N_ENCRYPTION_KEY': ${ENCRYPTION_KEY}
+  'N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS': true
+  'OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS': true
+  'N8N_RUNNERS_ENABLED': true
+
+x-all-health: &all-health
+  interval: 10m
+  timeout: 10s
+  retries: 5
+  start_period: 2m
+  start_interval: 10s
+
+services:
+  n8n:
+    <<: *n8n-service
+    container_name: n8n_server
+    hostname: n8n-server
+    networks:
+      default:
+      macvlan_net:
+        ipv4_address: 192.0.2.50
+        # Docker generated MAC addresses are "02:42" + the HEX value of
+        # the IP address.  For example:
+        #   * IP Address:        "172.17.0.2"
+        #   * HEX Value:        "ac.11.00.02"
+        #   * Docker MAC: "02:42:ac:11:00:02"
+        mac_address: 02:42:0A:0A:05:32
+#    ports:
+#      - 5678:5678
+    environment:
+      <<: *n8n-env
+      # N8N - Web Settings
+      N8N_LISTEN_ADDRESS: 192.0.2.50
+      N8N_PROTOCOL: ${N8N_PROTOCOL}
+      N8N_HOST: ${N8N_HOST}
+      N8N_PORT: ${N8N_PORT}
+      N8N_SECURE_COOKIE: false
+      # N8N - TLS Settings
+      N8N_SSL_CERT: ${N8N_SSL_CERT}
+      N8N_SSL_KEY: ${N8N_SSL_KEY}
+      # N8N - License Variables
+      N8N_LICENSE_ACTIVATION_KEY: ${LICENSE_KEY}
+      N8N_LICENSE_AUTO_RENEW_ENABLED: true   # Licenses expire every 10 days
+      N8N_LICENSE_AUTO_RENEW_OFFSET: 259200  # Seconds before license expiers (3d = 72h = 259200s)
+      # N8N - Email Settings
+      N8N_EMAIL_MODE: smtp
+      N8N_SMTP_HOST: smtp.gmail.com
+      N8N_SMTP_PORT: 587
+      N8N_SMTP_USER: change-me
+      N8N_SMTP_PASS: change-me
+      N8N_SMTP_SENDER: user@example.com
+      N8N_SMTP_SSL: false
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    healthcheck:
+      #  https://docs.n8n.io/hosting/logging-monitoring/monitoring/#healthz-and-healthzreadiness
+      test: ['CMD-SHELL', 'wget --spider ${N8N_PROTOCOL}://${N8N_HOST}:${N8N_PORT}/healthz/readiness']
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted)
+#      - n8n_app:/home/node/.n8n
+      # Volumes used for PERSISTANT DATA (NOT TESTING)
+      - /path/to/volumes/n8n_app:/home/node/.n8n:rw
+      # Files used for SSL/TLS CERTS
+      - /path/to/ssl/n8n.example.com_cert.pem:/etc/ssl/private/n8n.example.com.pem:ro
+      - /path/to/ssl/n8n.example.com_privkey.pem:${N8N_SSL_KEY}:ro
+      - /path/to/ssl/n8n.example.com_fullchain.pem:${N8N_SSL_CERT}:ro
+
+  n8n-worker:
+    <<: *n8n-service
+    container_name: n8n_worker
+    hostname: n8n-worker
+    # Uncomment the 'networks:' config below if you have issues with workflows
+    # not reaching some/all endponts.  This will give your worker a static IP
+    # on your network, and make your N8N worker directly reachable.
+#    networks:
+#      default:
+#      macvlan_net:
+#        ipv4_address: 192.0.2.51
+#        mac_address: 02:42:0A:0A:05:33
+    depends_on:
+      n8n:
+        condition: service_healthy
+    environment:
+      <<: *n8n-env
+    command: worker
+    healthcheck:
+      #  https://docs.n8n.io/hosting/logging-monitoring/monitoring/#healthz-and-healthzreadiness
+      test: ['CMD-SHELL', 'wget --spider http://n8n-worker:5678/healthz']
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted)
+#      - n8n_app:/home/node/.n8n
+      # Volumes used for PERSISTANT DATA (NOT TESTING)
+      - /path/to/volumes/n8n_app:/home/node/.n8n:rw
+
+  redis:
+    image: redis:7-alpine
+    container_name: n8n_redis
+    hostname: n8n-redis
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted)
+#      - n8n_redis:/data
+      # Volumes used for PERSISTANT DATA (NOT TESTING)
+      - /path/to/volumes/n8n_redis:/data:rw
+
+  db:
+    image: postgres:17.4
+    container_name: n8n_db
+    hostname: n8n-postgres
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+      POSTGRES_USER: ${DB_ROOT_USER}
+      POSTGRES_PASSWORD: ${DB_ROOT_PASS}
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_NON_ROOT_USER: ${DB_NON_ROOT_USER}
+      POSTGRES_NON_ROOT_PASSWORD: ${DB_NON_ROOT_PASS}
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h localhost -U ${DB_ROOT_USER} -d ${DB_NAME}']
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted)
+#      - n8n_db:/var/lib/postgresql/data
+      # Volumes used for PERSISTANT DATA (NOT TESTING)
+      - ./scripts/init-data.sh:/docker-entrypoint-initdb.d/init-data.sh
+      - /path/to/volumes/n8n_db:/var/lib/postgresql/data:rw

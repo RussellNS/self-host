@@ -1,0 +1,557 @@
+# NETWORK INFO
+# The 'networks:' section assigns a service to a user created network.
+#
+# In order for this 'docker-compose.yml' file to work, the following Docker network
+# must be created before hand:
+#
+#   Use this for QNAP NAS devices
+#   docker network create -d qnet --ipam-driver=qnet --ipam-opt=iface=eth4 --subnet=198.51.100.0/24 --gateway 198.51.100.1 macvlan_net --opt=iface=eth4
+#     *  Reference: https://qnap-dev.github.io/container-station-api/qnet.html
+#
+#   Use this for standard Docker
+#   docker network create -d macvlan --subnet=198.51.100.0/24 --gateway=198.51.100.1 -o parent=ens33 macvlan_net
+#                            |     |          |           |           |        |           |   | |         |
+#                            +-----+          +-----------+           +--------+           +---+ +----+----+
+#                               |                   |                      |                 |        |
+#   This needs to match the ----+                   |                      |                 |        |
+#   driver used for the                             |                      |                 |        |
+#   network (the default driver                     |                      |                 |        |
+#   for macvlan networks in Docker                  |                      |                 |        |
+#   is 'macvlan', the default                       |                      |                 |        |
+#   for QNAP NAS is 'qnet'.                         |                      |                 |        |
+#                                                   |                      |                 |        |
+#   This needs to match the subnet in  -------------+                      |                 |        |
+#   your environment.                                                      |                 |        |
+#                                                                          |                 |        |
+#   This needs to match the IP of your ------------------------------------+                 |        |
+#   gateway.                                                                                 |        |
+#                                                                                            |        |
+#   This needs to match the name of    ------------------------------------------------------+        |
+#   your interface (NIC).                                                                             |
+#                                                                                                     |
+#   This can be any user assigned ------------------+-------------------------------------------------+
+#   value, but both of these need                   |
+#   to match.                                       |
+#                                                   |
+#      +--------------------------------------------+
+#      |
+# +----+----+
+# |         |
+networks:
+  macvlan_net:
+    external: true
+
+volumes:
+  nginx-logs:
+#  nextcloud_app:
+#  nextcloud_data:
+#  nextcloud_db:
+#  drawio_data:
+#  onlyoffice_data:
+#  onlyoffice_db:
+#  onlyoffice_lib:
+#  onlyoffice_logs:
+
+x-all-services: &all-svcs
+  pull_policy: always
+  restart: unless-stopped
+#  dns_search: example.com
+  dns:
+    - 198.51.100.10
+
+x-all-health: &all-health
+  interval: 10m
+  timeout: 10s
+  retries: 5
+  start_period: 10m
+  start_interval: 10s
+
+services:
+  nginx:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_nginx-v1.30_stable-alpine
+      args:
+        IMAGE_VERSION: ${NGINX_VERSION}
+        LUA_VERSION: ${LUA_BOUNCER_VERSION}
+        MAXMIND_KEY: ${MAXMIND_KEY}
+    container_name: nextcloud_nginx
+    hostname: nextcloud-nginx
+    networks:
+      default:
+      macvlan_net:
+        ipv4_address: 192.0.2.20
+        # Docker generated MAC addresses are "02:42" + the HEX value of
+        # the IP address.  For example:
+        #   * IP Address:        "172.17.0.2"
+        #   * HEX Value:        "ac.11.00.02"
+        #   * Docker MAC: "02:42:ac:11:00:02"
+        mac_address: 02:42:0A:0A:05:14
+    depends_on:
+      app:
+        condition: service_healthy
+      onlyoffice:
+        condition: service_healthy
+      drawio:
+        condition: service_healthy
+    environment:
+      # ENV variables defined in a '.env' file.  View with 'ls -lha'.
+      # AUTOMATIC LOADING
+      # If a '.env' file is in the same directory as the 'compose.yaml' file, it will
+      # automatically be loaded.
+      # USAGE
+      # Variables in this file can be referenced in the 'compose.yaml' file anywhere,
+      # not just in the 'environment:' section.  Referencing works like this:
+      #   *  ${variable_name}
+      #   *  ${variable_name:-default_value}
+      # NOTE: Putting ENV values in a '.env' file helps to obfuscate passwords from the 'compose.yaml'.
+      #       Doing it this way allows for seeking online help without
+      #       disclosing passwords.
+      - TZ=${TZ}
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted with 'docker-compose down -v')
+      - nginx-logs:/var/log/nginx:rw
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+#      - /path/to/volumes/vscode-server:/config:rw
+      - ./configFiles/webFiles/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./configFiles/webFiles/crowdsec-nginx-bouncer.conf:/etc/crowdsec/bouncers/crowdsec-nginx-bouncer.conf:ro
+      # Files used for SSL/TLS CERTS - Cert files must be 1000:1000 (UID:GID)
+      - /path/to/ssl/cert.pem:/etc/ssl/example.com.pem:ro
+      - /path/to/ssl/privkey.pem:/etc/ssl/example.com.key:ro
+      - /path/to/ssl/fullchain.pem:/etc/ssl/example.com.fullchain.pem:ro
+
+# ----------
+
+  log-api:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_log-api
+      args:
+        IMAGE_VERSION: ${PYTHON_VERSION}
+    container_name: nextcloud_log-api
+    hostname: nxtcloud-logapi
+    networks:
+      default:
+      macvlan_net:
+        ipv4_address: 192.0.2.21
+        # Docker generated MAC addresses are "02:42" + the HEX value of
+        # the IP address.  For example:
+        #   * IP Address:        "172.17.0.2"
+        #   * HEX Value:        "ac.11.00.02"
+        #   * Docker MAC: "02:42:ac:11:00:02"
+        mac_address: 02:42:0A:0A:05:15
+    environment:
+      - LOG_API_TOKEN=${LOG_API_TOKEN}
+      - LOG_API_PORT=8090
+      - LOG_API_ENABLED_FILES=nginx_access,nextcloud_app
+    healthcheck:
+      test: ["CMD-SHELL", "python3 /app/health_check.py"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted with 'docker-compose down -v')
+      - nginx-logs:/var/log/nginx:ro
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+      - /path/to/volumes/nextcloud_data/nextcloud.log:/var/log/nextcloud.log:ro
+
+# ----------
+
+  crowdsec:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_crowdsec
+      args:
+        IMAGE_VERSION: ${CROWDSEC_VERSION}
+    container_name: nextcloud_crowdsec
+    hostname: nextcloud-agent
+    depends_on:
+      nginx:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ}
+      DISABLE_LOCAL_API: "true"
+      AGENT_USERNAME: ${AGENT_USERNAME}
+      AGENT_PASSWORD: ${AGENT_PASSWORD}
+      LOCAL_API_URL: http://lapi.example.com:8080
+      COLLECTIONS: "crowdsecurity/nginx crowdsecurity/appsec-generic-rules crowdsecurity/appsec-virtual-patching"
+    healthcheck:
+#      test: ["CMD-SHELL", "wget --spider --quiet --tries=1 --timeout=5 http://localhost:8080/health || exit 1"]
+      test: ["CMD-SHELL", "cscli lapi status || exit 1"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING or MONITORING - gets deleted with 'docker-compose down -v'
+      - nginx-logs:/var/log/nginx:ro
+      # Volumes used for PERSISTANT DATA - NOT TESTING - these do not get deleted, even with '-v'
+      - ./vols/crowdsec_data:/etc/crowdsec/
+      - ./vols/crowdsec_db:/var/lib/crowdsec/data/
+      # Files used for PERSISTANT DATA - Docker friendly - mount more-specific paths after less-specific
+      - ./configFiles/webFiles/acquis-nginx-log.yaml:/etc/crowdsec/acquis.d/acquis-nginx-log.yaml:ro
+      - ./configFiles/webFiles/acquis-appsec-waf.yaml:/etc/crowdsec/acquis.d/acquis-appsec-waf.yaml:ro
+      - ./configFiles/webFiles/nextcloud-body-override.yaml:/etc/crowdsec/appsec-configs/appsec-default.yaml:ro
+      - ./configFiles/webFiles/home-whitelists.yaml:/etc/crowdsec/parsers/s02-enrich/home-whitelists.yaml:ro
+
+# ----------
+
+  app:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_nextcloud_nginx
+      args:
+        IMAGE_VERSION: ${NEXTCLOUD_VERSION}
+    hostname: nxtcloud-app
+    container_name: nextcloud_app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+#    networks:
+#      default:
+#      macvlan_net:
+#        ipv4_address: 192.0.2.20
+        # Docker generated MAC addresses are "02:42" + the HEX value of
+        # the IP address.  For example:
+        #   * IP Address:        "172.17.0.2"
+        #   * HEX Value:        "ac.11.00.02"
+        #   * Docker MAC: "02:42:ac:11:00:02"
+#        mac_address: 02:42:0A:0A:05:14
+    environment:
+      TZ: ${TZ}
+      NEXTCLOUD_DATA_DIR: /var/www/data
+      NEXTCLOUD_ADMIN_USER_FILE: /run/secrets/nextcloud_app_admin_acct
+      NEXTCLOUD_ADMIN_PASSWORD_FILE: /run/secrets/nextcloud_app_admin_pass
+      NEXTCLOUD_TRUSTED_DOMAINS: example.com www.example.com drive.example.com d.example.com example.com example.org nextcloud_app 192.0.2.20
+      TRUSTED_PROXIES: 192.0.2.8 192.0.2.9 192.0.2.20
+      PHP_MEMORY_LIMIT: 1G
+      POSTGRES_HOST: nextcloud_db
+      POSTGRES_DB_FILE: /run/secrets/nextcloud_db_name
+      POSTGRES_USER_FILE: /run/secrets/nextcloud_db_admin_acct
+      POSTGRES_PASSWORD_FILE: /run/secrets/nextcloud_db_admin_pass
+      REDIS_HOST: nextcloud_redis
+      REDIS_HOST_PORT: 6379
+      REDIS_HOST_PASSWORD: ${REDIS_PASS}
+    healthcheck:
+#      test: ["CMD-SHELL", "curl -sf https://example.org/index.html | grep html"]
+#      test: ["CMD-SHELL", "curl -sf https://example.com/index.html | grep html"]
+#      test: ["CMD-SHELL", "curl -sf https://example.com/index.html | grep html"]
+      test: ["CMD-SHELL", "curl -sf http://localhost/status.php || exit 1"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted with 'docker-compose down -v')
+#      - nextcloud_data:/var/www/data
+#      - nextcloud_app:/var/www/html
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+      - /path/to/volumes/nextcloud_data:/var/www/data:rw
+      - /path/to/volumes/nextcloud_web:/var/www/html:rw
+      # Files used for NEXTCLOUD config
+      - ./configFiles/webFiles/config.php:/var/www/html/config/config.php:rw
+      # Files used for APACHE config
+#      - ./configFiles/webFiles/000-default.conf:/etc/apache2/sites-enabled/000-default.conf:ro
+#      - ./configFiles/webFiles/ports.conf.443:/etc/apache2/ports.conf:ro
+#      - ./configFiles/webFiles/servername.conf:/etc/apache2/conf-available/nextcloud.conf:ro
+      # Files used for SSL/TLS CERTS
+      - /path/to/ssl/cert.pem:/etc/ssl/example.com.pem:ro
+      - /path/to/ssl/privkey.pem:/etc/ssl/example.com.key:ro
+      - /path/to/ssl/fullchain.pem:/etc/ssl/example.com.fullchain.pem:ro
+    secrets:
+      - nextcloud_app_admin_acct
+      - nextcloud_app_admin_pass
+      - nextcloud_db_name
+      - nextcloud_db_admin_acct
+      - nextcloud_db_admin_pass
+
+# ----------
+
+  db:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_postgres
+      args:
+        IMAGE_VERSION: ${POSTGRES_VERSION}
+    container_name: nextcloud_db
+    hostname: nxtcloud-db
+    environment:
+      TZ: ${TZ}
+      PGDATA: /var/lib/postgresql/data
+      POSTGRES_DB_FILE: /run/secrets/nextcloud_db_name
+      POSTGRES_USER_FILE: /run/secrets/nextcloud_db_admin_acct
+      POSTGRES_PASSWORD_FILE: /run/secrets/nextcloud_db_admin_pass
+    healthcheck:
+#      test: ["CMD-SHELL", "pg_isready", "-q", "-d", "nextcloud"]
+      test: ["CMD-SHELL", "pg_isready -q -d nextcloud"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted)
+#      - nextcloud_db:/var/lib/postgresql/data
+      # Volumes used for PERSISTANT DATA (NOT TESTING)
+      - /path/to/volumes/nextcloud_db:/var/lib/postgresql/data:rw
+    secrets:
+      - nextcloud_db_name
+      - nextcloud_db_admin_acct
+      - nextcloud_db_admin_pass
+
+# ----------
+
+  redis:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_redis_alpine
+      args:
+        IMAGE_VERSION: ${REDIS_VERSION}
+    container_name: nextcloud_redis
+    hostname: nxtcloud-redis
+    environment:
+      TZ: ${TZ}
+      REDISCLI_AUTH: ${REDIS_PASS}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      <<: *all-health
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASS}
+
+# ----------
+
+  cron:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_nextcloud_cron
+      args:
+        IMAGE_VERSION: ${NEXTCLOUD_VERSION}
+    container_name: nextcloud_cron
+    hostname: nxtcloud-cron
+    depends_on:
+      app:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+#    networks:
+#      default:
+    environment:
+      TZ: ${TZ}
+      NEXTCLOUD_DATA_DIR: /var/www/data
+      POSTGRES_HOST: nextcloud_db
+      POSTGRES_DB_FILE: /run/secrets/nextcloud_db_name
+      POSTGRES_USER_FILE: /run/secrets/nextcloud_db_admin_acct
+      POSTGRES_PASSWORD_FILE: /run/secrets/nextcloud_db_admin_pass
+      REDIS_HOST: nextcloud_redis
+      REDIS_HOST_PORT: 6379
+      REDIS_HOST_PASSWORD: ${REDIS_PASS}
+    healthcheck:
+      test: ["CMD-SHELL", "/healthcheck.sh"]
+      <<: *all-health
+      interval: 5m
+    volumes:
+      # Same persistent data volumes as nextcloud_app
+      - /path/to/volumes/nextcloud_data:/var/www/data:rw
+      - /path/to/volumes/nextcloud_web:/var/www/html:rw
+      # Same config.php mount
+      - ./configFiles/webFiles/config.php:/var/www/html/config/config.php:rw
+    secrets:
+      - nextcloud_db_name
+      - nextcloud_db_admin_acct
+      - nextcloud_db_admin_pass
+
+# ----------
+
+  webhook:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_nextcloud_webhook
+      args:
+        IMAGE_VERSION: ${NEXTCLOUD_VERSION}
+    container_name: nextcloud_webhook
+    hostname: nxtcld-webhook
+    depends_on:
+      app:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ}
+      NEXTCLOUD_DATA_DIR: /var/www/data
+      POSTGRES_HOST: nextcloud_db
+      POSTGRES_DB_FILE: /run/secrets/nextcloud_db_name
+      POSTGRES_USER_FILE: /run/secrets/nextcloud_db_admin_acct
+      POSTGRES_PASSWORD_FILE: /run/secrets/nextcloud_db_admin_pass
+      REDIS_HOST: nextcloud_redis
+      REDIS_HOST_PORT: 6379
+      REDIS_HOST_PASSWORD: ${REDIS_PASS}
+    healthcheck:
+      test: ["CMD-SHELL", "/healthcheck.sh"]
+      <<: *all-health
+      interval: 5m
+    volumes:
+      - /path/to/volumes/nextcloud_data:/var/www/data:rw
+      - /path/to/volumes/nextcloud_web:/var/www/html:rw
+      - ./configFiles/webFiles/config.php:/var/www/html/config/config.php:rw
+    secrets:
+      - nextcloud_db_name
+      - nextcloud_db_admin_acct
+      - nextcloud_db_admin_pass
+
+# ----------
+
+  drawio:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_drawio
+      args:
+        IMAGE_VERSION: ${DRAWIO_VERSION}
+#    pull_policy: always
+    container_name: nextcloud_drawio
+    hostname: nxtcloud-drawio
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      default:
+      macvlan_net:
+        ipv4_address: 192.0.2.24
+        mac_address: 02:42:0A:0A:05:18
+    environment:
+      TZ: ${TZ}
+      # For details on DRAWIO_CONFIG
+      #   *  https://www.diagrams.net/doc/faq/configure-diagram-editor#:~:text=is%2010%20kB.-,Example,-The%20following%20is
+      DRAWIO_BASE_URL: https://draw.example.com
+      DRAWIO_VIEWER_URL: https://draw.example.com/js/viewer.min.js
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080 || exit 1"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted)
+#      - drawio_data:/var/data
+      # Volumes used for PERSISTANT DATA (NOT TESTING)
+      - ./configFiles/webFiles/server.xml:/usr/local/tomcat/conf/server.xml:ro
+      # Files used for SSL/TLS CERTS
+      - /path/to/ssl/drawio.example.com_cert.pem:/usr/local/tomcat/conf/localhost-rsa-cert.pem:ro
+      - /path/to/ssl/drawio.example.com_fullchain.pem:/usr/local/tomcat/conf/localhost-rsa-chain.pem:ro
+      - /path/to/ssl/drawio.example.com_privkey.pem:/usr/local/tomcat/conf/localhost-rsa-key.pem:ro
+
+# ----------
+
+  onlyoffice:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_onlyoffice
+      args:
+        IMAGE_VERSION: ${ONLYOFFICE_VERSION}
+    container_name: nextcloud_onlyoffice
+    hostname: nxtcloud-office
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      default:
+      macvlan_net:
+        ipv4_address: 192.0.2.23
+        mac_address: 02:42:0A:0A:05:17
+    environment:
+      - TZ
+      # Uncomment strings below to enable the JSON Web Token validation.
+      - JWT_ENABLED=true
+      - JWT_SECRET=${JWT_SECRET}
+#      - JWT_HEADER=Authorization
+      - ONLYOFFICE_HTTPS_HSTS_ENABLED=false
+      - SSL_CERTIFICATE_PATH=/var/www/onlyoffice/Data/certs/example.com.fullchain.pem
+      - SSL_KEY_PATH=/var/www/onlyoffice/Data/certs/example.com.key
+      - SSL_DHPARAM_PATH=/var/www/onlyoffice/Data/certs/dhparam.pem
+    healthcheck:
+#      test: ["CMD-SHELL", "wget -qO- https://office.example.com/healthcheck | grep -q true"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost/healthcheck | grep -q true"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted)
+#      - onlyoffice_data:/var/www/onlyoffice/Data
+#      - onlyoffice_db:/var/lib/postgresql
+#      - onlyoffice_lib:/var/lib/onlyoffice
+#      - onlyoffice_logs:/var/log/onlyoffice
+      # Volumes used for PERSISTANT DATA (NOT TESTING)
+#      - ./fonts:/usr/share/fonts:rw
+      - ./configFiles/fonts:/usr/share/fonts/truetype/custom:rw
+#      - /path/to/volumes/onlyoffice_data:/var/www/onlyoffice/Data:rw
+#      - /path/to/volumes/onlyoffice_db:/var/lib/postgresql:rw
+#      - /path/to/volumes/onlyoffice_lib:/var/lib/onlyoffice:rw
+#      - /path/to/volumes/onlyoffice_logs:/var/log/onlyoffice:rw
+      # Files used for SSL/TLS CERTS
+      - /share/Containers/container-station-data/application/nextcloud/configFiles/private/dhparam4096.pem:/var/www/onlyoffice/Data/certs/dhparam.pem:ro
+      - /path/to/ssl/cert.pem:/var/www/onlyoffice/Data/certs/example.com.pem:ro
+      - /path/to/ssl/privkey.pem:/var/www/onlyoffice/Data/certs/example.com.key:ro
+      - /path/to/ssl/fullchain.pem:/var/www/onlyoffice/Data/certs/example.com.fullchain.pem:ro
+
+# ----------
+
+  appapi-harp:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_appapi-harp
+      args:
+        IMAGE_VERSION: ${NEXTCLOUD_APPAPI_VERSION}
+    container_name: nextcloud_appapi-harp
+    hostname: nxtcloud-appapi
+    depends_on:
+      app:
+        condition: service_healthy
+    extra_hosts:
+      - example.com:192.0.2.20
+    # Using 'ports:' vs 'expose:'
+    #   *  'ports:'   presents the ports externally (usually addressed as host_ip:port)
+    #   *  'expose:'  presents the ports internally (used for container to container traffic)
+    expose:
+      # ExApps HTTP
+      - 8780:8780
+      # ExApps HTTPS
+      - 8781:8781
+      # FRP (Fast Reverse Proxy)
+      - 8782:8782
+    environment:
+      - NC_INSTANCE_URL=https://example.com
+      - HP_SHARED_KEY_FILE=/run/secrets/nextcloud_appapi-harp_shared_key
+      - HP_FRP_DISABLE_TLS="true"
+      #### FYI ##### : The 'AppAPI - HaRP' container has run successfully with none of these set
+      # Wide open, all networks trusted - for troubleshooting
+#      - HP_TRUSTED_PROXY_IPS=0.0.0.0/0
+      # Just enough, lab network and localhost are trusted
+#      - HP_TRUSTED_PROXY_IPS=192.0.2.0/24,127.0.0.1
+      # Most articulated, lab network, docker network, and localhost are trusted
+#      - HP_TRUSTED_PROXY_IPS=192.0.2.0/24,172.29.12.0/22,127.0.0.1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+#      - ./configFiles/harp-certs:/certs
+#      - /share/CACHEDEV1_DATA/Containers/container-station-data/application/nextcloud/configFiles/harp-certs:/certs:rw
+      - /share/Containers/container-station-data/application/nextcloud/configFiles/harp-certs:/certs:rw
+      # Files used for SSL/TLS CERTS
+#      - /path/to/ssl/cert.pem:/certs/example.com.pem:ro
+#      - /path/to/ssl/privkey.pem:/certs/cert.pem.key:ro
+#      - /path/to/ssl/fullchain.pem:/certs/cert.pem:ro
+    secrets:
+      - nextcloud_appapi-harp_shared_key
+
+secrets:
+  nextcloud_app_admin_acct:
+    file: ./configFiles/private/nextcloud_app_admin_acct.txt
+  nextcloud_app_admin_pass:
+    file: ./configFiles/private/nextcloud_app_admin_pass.txt
+  nextcloud_db_name:
+    file: ./configFiles/private/nextcloud_db_name.txt
+  nextcloud_db_admin_acct:
+    file: ./configFiles/private/nextcloud_db_admin_acct.txt
+  nextcloud_db_admin_pass:
+    file: ./configFiles/private/nextcloud_db_admin_pass.txt
+  nextcloud_appapi-harp_shared_key:
+    file: ./configFiles/private/nextcloud_appapi-harp_shared_key.txt

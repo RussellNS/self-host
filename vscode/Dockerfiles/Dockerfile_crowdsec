@@ -1,0 +1,9 @@
+ARG IMAGE_VERSION
+FROM crowdsecurity/crowdsec:${IMAGE_VERSION}
+
+RUN apk update \
+    && apk add --no-cache \
+        nano \
+        curl \
+    # Clean up the cache to ensure the smallest possible image size.
+    && rm -rf /var/cache/apk/*

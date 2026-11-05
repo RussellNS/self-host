@@ -1,0 +1,324 @@
+# NETWORK INFO
+# The 'networks:' section assigns a service to a user created network.
+#
+# In order for this 'docker-compose.yml' file to work, the following Docker network
+# must be created before hand:
+#
+#   Use this for QNAP NAS devices
+#   docker network create -d qnet --ipam-driver=qnet --ipam-opt=iface=eth4 --subnet=198.51.100.0/24 --gateway 198.51.100.1 macvlan_net --opt=iface=eth4
+#     *  Reference: https://qnap-dev.github.io/container-station-api/qnet.html
+#
+#   Use this for standard Docker
+#   docker network create -d macvlan --subnet=198.51.100.0/24 --gateway=198.51.100.1 -o parent=ens33 macvlan_net
+#                            |     |          |           |           |        |           |   | |         |
+#                            +-----+          +-----------+           +--------+           +---+ +----+----+
+#                               |                   |                      |                 |        |
+#   This needs to match the ----+                   |                      |                 |        |
+#   driver used for the                             |                      |                 |        |
+#   network (the default driver                     |                      |                 |        |
+#   for macvlan networks in Docker                  |                      |                 |        |
+#   is 'macvlan', the default                       |                      |                 |        |
+#   for QNAP NAS is 'qnet'.                         |                      |                 |        |
+#                                                   |                      |                 |        |
+#   This needs to match the subnet in  -------------+                      |                 |        |
+#   your environment.                                                      |                 |        |
+#                                                                          |                 |        |
+#   This needs to match the IP of your ------------------------------------+                 |        |
+#   gateway.                                                                                 |        |
+#                                                                                            |        |
+#   This needs to match the name of    ------------------------------------------------------+        |
+#   your interface (NIC).                                                                             |
+#                                                                                                     |
+#   This can be any user assigned ------------------+-------------------------------------------------+
+#   value, but both of these need                   |
+#   to match.                                       |
+#                                                   |
+#      +--------------------------------------------+
+#      |
+# +----+----+
+# |         |
+networks:
+  macvlan_net:
+    external: true
+
+volumes:
+  nginx-logs:
+  mealie-data:
+  mealie-db:
+
+x-all-services: &all-svcs
+  restart: unless-stopped
+#  dns_search: example.com
+  dns:
+    - 198.51.100.10
+
+x-all-health: &all-health
+  interval: 10m
+  timeout: 10s
+  retries: 5
+  start_period: 2m
+  start_interval: 10s
+
+services:
+  nginx:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_nginx-v1.30_stable-alpine
+      args:
+        IMAGE_VERSION: ${NGINX_VERSION}
+        LUA_VERSION: ${LUA_BOUNCER_VERSION}
+        MAXMIND_KEY: ${MAXMIND_KEY}
+    container_name: mealie_nginx
+    hostname: mealie-nginx
+    networks:
+      default:
+      macvlan_net:
+        ipv4_address: 192.0.2.40
+        # Docker generated MAC addresses are "02:42" + the HEX value of
+        # the IP address.  For example:
+        #   * IP Address:        "172.17.0.2"
+        #   * HEX Value:        "ac.11.00.02"
+        #   * Docker MAC: "02:42:ac:11:00:02"
+        mac_address: 02:42:0A:0A:05:28
+    depends_on:
+      app:
+        condition: service_healthy
+      log-api:
+        condition: service_healthy
+    environment:
+      # ENV variables defined in a '.env' file.  View with 'ls -lha'.
+      # AUTOMATIC LOADING
+      # If a '.env' file is in the same directory as the 'compose.yaml' file, it will
+      # automatically be loaded.
+      # USAGE
+      # Variables in this file can be referenced in the 'compose.yaml' file anywhere,
+      # not just in the 'environment:' section.  Referencing works like this:
+      #   *  ${variable_name}
+      #   *  ${variable_name:-default_value}
+      # NOTE: Putting ENV values in a '.env' file helps to obfuscate passwords from the 'compose.yaml'.
+      #       Doing it this way allows for seeking online help without
+      #       disclosing passwords.
+      - TZ=${TZ}
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted with 'docker-compose down -v')
+      - nginx-logs:/var/log/nginx:rw
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+      - ./configFiles/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./configFiles/crowdsec-nginx-bouncer.conf:/etc/crowdsec/bouncers/crowdsec-nginx-bouncer.conf:ro
+      # Files used for SSL/TLS CERTS - Cert files must be 1000:1000 (UID:GID)
+      - /path/to/ssl/mealie.example.net_cert.pem:/etc/ssl/mealie.example.net.pem:ro
+      - /path/to/ssl/mealie.example.net_privkey.pem:/etc/ssl/mealie.example.net.key:ro
+      - /path/to/ssl/mealie.example.net_fullchain.pem:/etc/ssl/mealie.example.net.fullchain.pem:ro
+
+# ----------
+
+  log-api:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_log-api
+      args:
+        IMAGE_VERSION: ${PYTHON_VERSION}
+    container_name: mealie_log-api
+    hostname: mealie-logapi
+    networks:
+      default:
+      macvlan_net:
+        ipv4_address: 192.0.2.41
+        # Docker generated MAC addresses are "02:42" + the HEX value of
+        # the IP address.  For example:
+        #   * IP Address:        "172.17.0.2"
+        #   * HEX Value:        "ac.11.00.02"
+        #   * Docker MAC: "02:42:ac:11:00:02"
+        mac_address: 02:42:0A:0A:05:29
+    environment:
+      - LOG_API_TOKEN=${LOG_API_TOKEN}
+      - LOG_API_PORT=8090
+      - LOG_API_ENABLED_FILES=nginx_access,mealie_app
+    healthcheck:
+      test: ["CMD-SHELL", "python3 /app/health_check.py"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted with 'docker-compose down -v')
+      - nginx-logs:/var/log/nginx:ro
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+      - /path/to/volumes/mealie_data/mealie.log:/var/log/mealie.log:ro
+
+# ----------
+
+  crowdsec:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_crowdsec
+      args:
+        IMAGE_VERSION: ${CROWDSEC_VERSION}
+    container_name: mealie_crowdsec
+    hostname: mealie-agent
+    depends_on:
+      nginx:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ}
+      DISABLE_LOCAL_API: "true"
+      AGENT_USERNAME: ${AGENT_USERNAME}
+      AGENT_PASSWORD: ${AGENT_PASSWORD}
+      LOCAL_API_URL: http://lapi.example.com:8080
+      COLLECTIONS: "crowdsecurity/nginx crowdsecurity/appsec-generic-rules crowdsecurity/appsec-virtual-patching"
+    healthcheck:
+#      test: ["CMD-SHELL", "wget --spider --quiet --tries=1 --timeout=5 http://localhost:8080/health || exit 1"]
+      test: ["CMD-SHELL", "cscli lapi status || exit 1"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING or MONITORING - gets deleted with 'docker-compose down -v'
+      - nginx-logs:/var/log/nginx:ro
+      # Volumes used for PERSISTANT DATA - NOT TESTING - these do not get deleted, even with '-v'
+      - ./vols/crowdsec_data:/etc/crowdsec/
+      - ./vols/crowdsec_db:/var/lib/crowdsec/data/
+      # Files used for PERSISTANT DATA - Docker friendly - mount more-specific paths after less-specific
+#      - ./configFiles/acquis.yaml:/etc/crowdsec/acquis.yaml:ro
+      - ./configFiles/acquis-nginx-log.yaml:/etc/crowdsec/acquis.d/acquis-nginx-log.yaml:ro
+      - ./configFiles/acquis-appsec-waf.yaml:/etc/crowdsec/acquis.d/acquis-appsec-waf.yaml:ro
+      - ./configFiles/webFiles/home-whitelists.yaml:/etc/crowdsec/parsers/s02-enrich/home-whitelists.yaml:ro
+
+# ----------
+
+  app:
+    <<: *all-svcs
+    # Check this website for new images:
+    #   *  https://github.com/mealie-recipes/mealie
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_mealie
+      args:
+        IMAGE_VERSION: ${MEALIE_VERSION}
+    container_name: mealie_app
+    hostname: mealie-app
+    depends_on:
+      db:
+        condition: service_healthy
+#    ports:
+#        - "9925:9000" #
+    deploy:
+      resources:
+        limits:
+          memory: 1000M #
+    environment:
+      # ENV variables defined in a '.env' file.  View with 'ls -lha'.
+      # More info above.
+      TZ: ${TZ}
+      # Mealie ENV Vars.
+      #   *  https://docs.mealie.io/documentation/getting-started/installation/backend-config/
+#      TLS_CERTIFICATE_PATH: ${CERT_PATH}
+#      TLS_PRIVATE_KEY_PATH: ${KEY_PATH}
+      ALLOW_SIGNUP: "false"
+      PUID: 1000
+      PGID: 1000
+      BASE_URL: http://mealie_web
+      # Logging
+      LOG_LEVEL: INFO
+      LOG_CONFIG_OVERRIDE: /app/logconf.json
+#      PYTHONPATH: /app
+      # Database Settings
+      DB_ENGINE: postgres
+      POSTGRES_SERVER: mealie_db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+      # Theming - Light
+      THEME_LIGHT_PRIMARY:   '#00669F'
+      THEME_LIGHT_ACCENT:    '#0094C8'
+      THEME_LIGHT_SECONDARY: '#003F63'
+      THEME_LIGHT_SUCCESS:   '#2E8B57'
+      THEME_LIGHT_INFO:      '#1E88E5'
+      THEME_LIGHT_WARNING:   '#FF8F00'
+      THEME_LIGHT_ERROR:     '#D84343'
+      # Theming - Dark
+      THEME_DARK_PRIMARY:    '#00669F'
+      THEME_DARK_ACCENT:     '#0094C8'
+      THEME_DARK_SECONDARY:  '#003F63'
+      THEME_DARK_SUCCESS:    '#2E8B57'
+      THEME_DARK_INFO:       '#1E88E5'
+      THEME_DARK_WARNING:    '#FF8F00'
+      THEME_DARK_ERROR:      '#D84343'
+      # OpenAI / Ollama Settings
+      OPENAI_BASE_URL: http://ollama.example.com:11434/v1
+      OPENAI_API_KEY: ollama-ignores-this
+#      OPENAI_MODEL: qwen2.5vl:7b
+      OPENAI_MODEL: qwen3-vl:8b
+      OPENAI_ENABLE_IMAGE_SERVICES: true
+      OPENAI_SEND_DATABASE_DATA: true
+      OPENAI_REQUEST_TIMEOUT: 600
+      # Email Settings
+      SMTP_AUTH_STRATEGY: TLS
+      SMTP_FROM_EMAIL: user@example.com
+      SMTP_FROM_NAME: Meals by Example
+      SMTP_HOST: smtp.gmail.com
+      SMTP_PORT: 587
+      SMTP_USER: change-me
+      SMTP_PASSWORD: change-me
+      # LDAP Settings
+      LDAP_AUTH_ENABLED: True
+      LDAP_SERVER_URL: ldaps://ad.example.com:636
+      LDAP_TLS_INSECURE: False
+      LDAP_TLS_CACERTFILE: /etc/ssl/certs/ISRG_Root_X1.pem
+      LDAP_ENABLE_STARTTLS: False
+      LDAP_BASE_DN: DC=example,DC=com
+      # nextAdminLDAP
+      LDAP_QUERY_BIND: CN=Service Account,OU=Admins,DC=example,DC=com
+      LDAP_QUERY_PASSWORD: change-me
+      LDAP_USER_FILTER: (memberof=CN=Mealie Users,OU=Groups,OU=Mealie,DC=example,DC=com)
+      LDAP_ADMIN_FILTER: (memberof=CN=Mealie Admins,OU=Groups,OU=Mealie,DC=example,DC=com)
+      LDAP_ID_ATTRIBUTE: sAMAccountName
+      LDAP_NAME_ATTRIBUTE: name
+      LDAP_MAIL_ATTRIBUTE: mail
+#    healthcheck:
+       # Both healthchecks work, the first one is built into the container
+       # Because it's built in, neither are needed
+#      test: ["CMD-SHELL", "python -m mealie.scripts.healthcheck || exit 1"]
+#      test: ["CMD-SHELL", "curl -fs http://localhost:9000 || exit 1"]
+#      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted with 'docker-compose down -v')
+#      - mealie-data:/app/data/
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+      - /path/to/volumes/mealie_data:/app/data/:rw
+      - ./scripts/mealie_json_formatter.py:/opt/mealie/lib/python3.14/site-packages/mealie_json_formatter.py:ro
+      - ./configFiles/logconf.json:/app/logconf.json:ro
+      - ./configFiles/custom.css:/app/data/custom_styles/custom.css:ro
+      # Files used for SSL/TLS CERTS - Cert files must be 1000:1000 (UID:GID)
+#      - /path/to/ssl/mealie.example.net_cert.pem:/etc/ssl/mealie.example.net.pem:ro
+#      - /path/to/ssl/mealie.example.net_privkey.pem:/etc/ssl/mealie.example.net.key:ro
+#      - /path/to/ssl/mealie.example.net_fullchain.pem:/etc/ssl/mealie.example.net.fullchain.pem:ro
+
+# ----------
+
+  db:
+    <<: *all-svcs
+    container_name: mealie_db
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_postgres
+      args:
+        IMAGE_VERSION: ${POSTGRES_VERSION}
+    environment:
+      # ENV variables defined in a '.env' file.  View with 'ls -lha'.
+      # More info above.
+      TZ: ${TZ}
+      PGDATA: /var/lib/postgresql/data
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+    healthcheck:
+      test: ["CMD", "pg_isready"]
+      <<: *all-health
+    volumes:
+       # Volumes used for TESTING (they get deleted with 'docker-compose down -v')
+#      - mealie-db:/var/lib/postgresql/data
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+      - /path/to/volumes/mealie_db:/var/lib/postgresql/data:rw

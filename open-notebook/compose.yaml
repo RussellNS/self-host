@@ -1,0 +1,207 @@
+# NETWORK INFO
+# The 'networks:' section assigns a service to a user created network.
+#
+# In order for this 'docker-compose.yml' file to work, the following Docker network
+# must be created before hand:
+#
+#   Use this for QNAP NAS devices
+#   docker network create -d qnet --ipam-driver=qnet --ipam-opt=iface=eth4 --subnet=198.51.100.0/24 --gateway 198.51.100.1 macvlan_net --opt=iface=eth4
+#     *  Reference: https://qnap-dev.github.io/container-station-api/qnet.html
+#
+#   Use this for standard Docker
+#   docker network create -d macvlan --subnet=198.51.100.0/24 --gateway=198.51.100.1 -o parent=ens33 macvlan_net
+#                            |     |          |           |           |        |           |   | |         |
+#                            +-----+          +-----------+           +--------+           +---+ +----+----+
+#                               |                   |                      |                 |        |
+#   This needs to match the ----+                   |                      |                 |        |
+#   driver used for the                             |                      |                 |        |
+#   network (the default driver                     |                      |                 |        |
+#   for macvlan networks in Docker                  |                      |                 |        |
+#   is 'macvlan', the default                       |                      |                 |        |
+#   for QNAP NAS is 'qnet'.                         |                      |                 |        |
+#                                                   |                      |                 |        |
+#   This needs to match the subnet in  -------------+                      |                 |        |
+#   your environment.                                                      |                 |        |
+#                                                                          |                 |        |
+#   This needs to match the IP of your ------------------------------------+                 |        |
+#   gateway.                                                                                 |        |
+#                                                                                            |        |
+#   This needs to match the name of    ------------------------------------------------------+        |
+#   your interface (NIC).                                                                             |
+#                                                                                                     |
+#   This can be any user assigned ------------------+-------------------------------------------------+
+#   value, but both of these need                   |
+#   to match.                                       |
+#                                                   |
+#      +--------------------------------------------+
+#      |
+# +----+----+
+# |         |
+networks:
+  macvlan_net:
+    external: true
+
+volumes:
+#  data:
+#  db:
+  nginx-logs:
+
+x-all-services: &all-svcs
+  restart: unless-stopped
+  pull_policy: always
+#  dns_search: example.com
+  dns:
+    - 198.51.100.10
+
+x-all-health: &all-health
+  interval: 10m
+  timeout: 10s
+  retries: 5
+  start_period: 2m
+  start_interval: 10s
+
+services:
+  nginx:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_nginx-v1.30_stable-alpine
+      args:
+        IMAGE_VERSION: ${NGINX_VERSION}
+    container_name: open-note_nginx
+    hostname: opn-note-nginx
+    # Docker generated MAC addresses are "02:42" + the HEX value of the
+    # IP address.  Example:
+    #   * IP Address:        "172.17.0.2"
+    #   * HEX Value:        "ac.11.00.02"
+    #   * Docker MAC: "02:42:ac:11:00:02"
+    networks:
+      default:
+      macvlan_net:
+        ipv4_address: 192.0.2.42
+        mac_address: 02:42:0A:0A:05:2A
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      # ENV variables defined in a '.env' file.  View with 'ls -lha'.
+      # AUTOMATIC LOADING
+      # If a '.env' file is in the same directory as the 'compose.yaml' file, it will
+      # automatically be loaded.
+      # USAGE
+      # Variables in this file can be referenced in the 'compose.yaml' file anywhere,
+      # not just in the 'environment:' section.  Referencing works like this:
+      #   *  ${variable_name}
+      #   *  ${variable_name:-default_value}
+      # NOTE: Putting ENV values in a '.env' file helps to obfuscate passwords from the 'compose.yaml'.
+      #       Doing it this way allows for seeking online help without
+      #       disclosing passwords.
+      - TZ=${TZ}
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted with 'docker-compose down -v')
+      - nginx-logs:/var/log/nginx:rw
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+#      - /path/to/volumes/vscode-server:/config:rw
+      - ./configFiles/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Files used for SSL/TLS CERTS - Cert files must be 1000:1000 (UID:GID)
+      - /path/to/ssl/cert.pem:/etc/ssl/example.com_cert.pem:ro
+      - /path/to/ssl/privkey.pem:/etc/ssl/example.com_privkey.pem:ro
+      - /path/to/ssl/fullchain.pem:/etc/ssl/example.com_fullchain.pem:ro
+
+  app:
+    <<: *all-svcs
+#    image: lfnovo/open_notebook:v1-latest
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_open-notebook
+      args:
+        IMAGE_VERSION: ${OPENNOTEBOOK_VERSION}
+    container_name: open-note_app
+    hostname: open-notebook
+    # Docker generated MAC addresses are "02:42" + the HEX value of the
+    # IP address.  Example:
+    #   * IP Address:        "172.17.0.2"
+    #   * HEX Value:        "ac.11.00.02"
+    #   * Docker MAC: "02:42:ac:11:00:02"
+#    networks:
+#      default:
+#      macvlan_net:
+#        ipv4_address: 192.0.2.42
+#        mac_address: 02:42:0A:0A:05:2A
+    expose:
+      - "8502:8502"  # Web UI (React frontend)
+      - "5055:5055"  # API (required!)
+#    ports:
+#      - "8502:8502"  # Web UI (React frontend)
+#      - "5055:5055"  # API (required!)
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # External API URL (required)
+#      - API_URL=http://open-note_app:5055
+      - API_URL=https://note.example.com
+      # Internal API URL (optional)
+      - INTERNAL_API_URL=http://localhost:5055
+
+      # Encryption key for credential storage (required)
+      - OPEN_NOTEBOOK_ENCRYPTION_KEY=${OPEN_NOTEBOOK_ENCRYPTION_KEY}
+
+      # Database (required)
+      - SURREAL_URL=${SURREAL_URL:-ws://db:8000/rpc}
+      - SURREAL_USER=${SURREAL_USER:-root}
+      - SURREAL_PASSWORD=${SURREAL_PASSWORD:-root}
+      - SURREAL_NAMESPACE=${SURREAL_NAMESPACE:-open_notebook}
+      - SURREAL_DATABASE=${SURREAL_DATABASE:-open_notebook}
+      - SURREAL_COMMANDS_MAX_TASKS=1
+      - SURREAL_COMMANDS_RETRY_WAIT_STRATEGY=exponential_jitter
+      - SURREAL_COMMANDS_RETRY_MAX_ATTEMPTS=5
+      - ESPERANTO_LLM_TIMEOUT=120       # give Ollama 2 min per call
+      - API_CLIENT_TIMEOUT=240          # outer timeout > LLM timeout + buffer
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fSs http://localhost:5055/health -o /dev/null || exit 1"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted with 'docker-compose down -v')
+#      - data:/app/data
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+      - /path/to/volumes/open-notebook_data:/app/data
+      # Files used for SSL/TLS CERTS - Cert files must be 1000:1000 (UID:GID)
+#      - /path/to/ssl/mealie.example.net_cert.pem:/etc/ssl/mealie.example.net.pem:ro
+#      - /path/to/ssl/mealie.example.net_privkey.pem:/etc/ssl/mealie.example.net.key:ro
+#      - /path/to/ssl/mealie.example.net_fullchain.pem:/etc/ssl/mealie.example.net.fullchain.pem:ro
+
+  db:
+    <<: *all-svcs
+#    image: surrealdb/surrealdb:v2
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_surrealdb
+      args:
+        IMAGE_VERSION: ${SURREALDB_VERSION}
+    container_name: open-note_db
+    hostname: open-note_db
+    ports:
+      - "8000:8000"
+    environment:
+      - SURREAL_EXPERIMENTAL_GRAPHQL=true
+    user: root
+    # Credentials default to root:root for a zero-config local setup. Before
+    # exposing this instance to a network, set SURREAL_USER / SURREAL_PASSWORD
+    # in a .env file (see .env.example) — they are applied here and to the
+    # open_notebook service below, so the two always stay in sync.
+#    command: start --user root --pass password --bind 0.0.0.0:8000 rocksdb:/mydata/mydatabase.db
+    command: start --log info --user ${SURREAL_USER:-root} --pass ${SURREAL_PASSWORD:-root} rocksdb:/mydata/mydatabase.db
+    healthcheck:
+#      test: ["CMD-SHELL", "curl -fSs http://localhost:8000/health -o /dev/null || exit 1"]
+#      test: ["CMD-SHELL", "/surreal isready --endpoint http://localhost:8000"]
+      test: ["CMD", "/surreal", "isready", "--endpoint", "http://localhost:8000"]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted with 'docker-compose down -v')
+#      - db:/mydata
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+      - /path/to/volumes/open-notebook_db:/mydata

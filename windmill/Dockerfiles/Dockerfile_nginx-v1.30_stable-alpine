@@ -1,0 +1,140 @@
+# ----------------------------------------------------------------------
+# Stage 1: Builder
+# Purpose: Compile the MaxMind GeoIP2 module and the Nginx executable.
+#          This stage contains all necessary build tools (gcc, make, etc.).
+# ----------------------------------------------------------------------
+ARG IMAGE_VERSION
+FROM nginx:${IMAGE_VERSION} AS builder
+# NOTE: You are currently seeing platform warnings because you are building on a
+# 64-bit platform (linux/arm64) but requesting a 32-bit base image (arm32v7).
+# To resolve this, you can switch to the 64-bit image: arm64v8/nginx:1.28.0-alpine
+# or use the architecture-agnostic tag: nginx:1.28.0-alpine
+
+# MaxMind GeoIP License Key
+# NOTE: This key is required to download MaxMind's free GeoLite2 databases.
+# Replace `<your_maxmind_license_key>` with your actual key.
+ARG MAXMIND_KEY=change-me
+
+# Install necessary build dependencies and run-time libraries needed for compilation.
+RUN apk update \
+    && apk add --no-cache \
+        # Standard development tools needed for compiling Nginx/modules
+        build-base \
+        # Nginx module header dependencies
+        pcre-dev \
+        zlib-dev \
+        openssl-dev \
+        # MaxMind development library needed for the geoip2 module
+        libmaxminddb-dev \
+        # Tool for downloading files
+        wget \
+        # Tool for cloning the GeoIP2 Nginx module repository
+        git \
+        # Headers needed for compiling software on the Linux kernel
+        linux-headers
+
+# Create a directory to store the MaxMind GeoIP database files.
+# Download the MaxMind GeoLite2 databases using the provided license key.
+RUN mkdir -p /etc/nginx/GeoIP2 \
+    # Download GeoLite2 City database
+    && wget "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=${MAXMIND_KEY}&suffix=tar.gz" -O /media/GeoLite2-City.mmdb.tar.gz \
+    # Download GeoLite2 Country database
+    && wget "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${MAXMIND_KEY}&suffix=tar.gz" -O /media/GeoLite2-Country.mmdb.tar.gz \
+    \
+    # Extract the database files directly into the GeoIP2 configuration directory.
+    # --strip=1 removes the containing folder that MaxMind includes in the archive.
+    && tar -zxf /media/GeoLite2-City.mmdb.tar.gz --strip=1 -C /etc/nginx/GeoIP2 \
+    && tar -zxf /media/GeoLite2-Country.mmdb.tar.gz --strip=1 -C /etc/nginx/GeoIP2 \
+    \
+    # Clean up the downloaded archives to save space in this build stage.
+    && rm /media/*.tar.gz
+
+# Recompile Nginx with the ngx_http_geoip2_module dynamically linked.
+RUN NGINX_SRC_DIR="/media/nginx-${NGINX_VERSION}" \
+    # Get the original configuration arguments used to build the base image's Nginx.
+    && CONFARGS=$(nginx -V 2>&1 | sed -n -e 's/^.*arguments: //p') \
+    \
+    # Filter out the existing --with-cc-opt and --with-ld-opt blocks.
+    # This is the most robust way to avoid unsupported flags and corrupted quotes.
+    && CLEAN_CONFARGS=$(echo "${CONFARGS}" | sed -E "s/ --with-cc-opt='[^']+'//g" | sed -E "s/ --with-ld-opt='[^']+'//g") \
+    \
+    # Define custom optimization flags that are known to work with Alpine's build-base GCC.
+    # -Os -fomit-frame-pointer: Optimization and code size reduction flags.
+    # -s (in ld-opt): Strip symbols from the final binary for a smaller size.
+    && CC_OPTS="-Os" \
+    && LD_OPTS="-s" \
+    \
+    # Reassemble the final configuration arguments.
+    # We use the clean arguments and inject our custom, minimal compiler/linker options.
+    && OPTIMIZED_CONFARGS="${CLEAN_CONFARGS} --with-cc-opt='${CC_OPTS}' --with-ld-opt='${LD_OPTS}'" \
+    \
+    # The base image sets NGINX_VERSION (e.g., 1.28.0)
+    && wget "http://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" -O /media/nginx-${NGINX_VERSION}.tar.gz \
+    # Extract the Nginx source code.
+    && tar -zxf /media/nginx-${NGINX_VERSION}.tar.gz -C /media \
+    \
+    # Clone the GeoIP2 module source code.
+    && git clone https://github.com/leev/ngx_http_geoip2_module.git "${NGINX_SRC_DIR}/geoip2_module" \
+    \
+    # Enter the Nginx source directory.
+    && cd "${NGINX_SRC_DIR}" \
+    \
+    # Configure Nginx, re-using the original configuration arguments and adding the dynamic GeoIP2 module.
+    && ./configure ${OPTIMIZED_CONFARGS} --add-dynamic-module="${NGINX_SRC_DIR}/geoip2_module" \
+    \
+    # Compile Nginx and the new dynamic module.
+    && make \
+    \
+    # 'make install' is only performed here to place the compiled files (nginx binary and .so module)
+    # into the /usr/sbin and /usr/lib directories of the builder stage for easy copying.
+    && make install
+
+# DEBUG - The 'RUN' line below causes the Docker build process to pause
+# DEBUG - indefinitely.  This can be used to pause a docker build, enter the
+# DEBUG - container in the middle of the build, then expand on Docker build
+# DEBUG - logic or identify and troubleshoot Docker build problems.  Perform
+# DEBUG - these steps to use:
+# DEBUG -   1) Build the Docker image using one of these commands:
+# DEBUG -        *  DOCKER_BUILDKIT=0 docker build -f <Dockerfile> .
+# DEBUG -        *  DOCKER_BUILDKIT=0 docker compose up
+# DEBUG -   2) When the build pauses, press CRTL+z (not CTRL+c).
+# DEBUG -   3) Enter 'docker container ls' to view container name.
+# DEBUG -   4) Use 'docker exec -it <container_name> sh' (or 'bash') to enter
+# DEBUG -      unfinished build.
+# DEBUG -   5) Manually run your commands inside the container.
+# DEBUG - Comment or delete when not needed.
+#RUN echo "##### DEBUG - Docker build pause #####" && echo "Use the following commands:" && echo "    CTRL+z" && echo "    docker container ls # get container name" && echo "    docker exec -it <container_name> [sh|bash]" && echo "    Run your commands during Docker build" && tail -f /dev/null
+
+# ----------------------------------------------------------------------
+# Stage 2: Final Image
+# Purpose: Create a minimal production image that only contains Nginx,
+#          the compiled module, and the MaxMind databases.
+# ----------------------------------------------------------------------
+# Use the same base image but in its clean state.
+FROM nginx:${IMAGE_VERSION}
+
+# Install only the necessary run-time dependencies for Nginx and GeoIP2.
+RUN apk update \
+    && apk add --no-cache \
+        # MaxMind runtime library (needed for .so module to work)
+        libmaxminddb \
+        # PCRE library (Nginx core dependency)
+        pcre \
+    # Clean up the cache to ensure the smallest possible image size.
+    && rm -rf /var/cache/apk/*
+
+# Copy the compiled Nginx binary, dynamic module, and GeoIP data from the builder stage.
+# The 'make install' step in the builder stage has put all necessary files here.
+COPY --from=builder /etc/nginx/GeoIP2 /etc/nginx/GeoIP2
+# Copy the recompiled Nginx executable (smaller due to optimization)
+COPY --from=builder /usr/sbin/nginx /usr/sbin/nginx
+# Copy the dynamic GeoIP2 module (.so file) and other Nginx libraries/files.
+COPY --from=builder /usr/lib/nginx /usr/lib/nginx
+
+# Copy default Nginx configuration files (though often a custom one is supplied separately)
+COPY --from=builder /etc/nginx/conf.d /etc/nginx/conf.d
+COPY --from=builder /etc/nginx/mime.types /etc/nginx/mime.types
+
+# Standard Nginx container configuration
+STOPSIGNAL SIGTERM
+CMD ["nginx", "-g", "daemon off;"]

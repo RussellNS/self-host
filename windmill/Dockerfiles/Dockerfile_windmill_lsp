@@ -1,0 +1,4 @@
+# Check this website for new images:
+#   *  https://github.com/windmill-labs/windmill/pkgs/container/windmill-extra
+ARG IMAGE_VERSION
+FROM ghcr.io/windmill-labs/windmill-extra:${IMAGE_VERSION}

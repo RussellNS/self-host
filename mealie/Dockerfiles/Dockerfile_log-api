@@ -1,0 +1,527 @@
+ARG IMAGE_VERSION
+FROM python:${IMAGE_VERSION}
+
+WORKDIR /app
+
+# -----------------------------------------------------------------------------
+# Create the 'log_api_server.py' script
+# -----------------------------------------------------------------------------
+# Hard coding the script into the Dockerfile allows for mobility
+#   *  Only one file (this Dockerfile) is required to spin up this container
+RUN cat <<'EOF' > /app/log_api_server.py
+import json
+import os
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+
+
+# JSON mapping for a caller-facing 'file' key to:
+#   *  the real path on disk
+#   *  the JSON field within each log line that holds its timestamp
+#   *  the strptime format to parse that field with.
+# A timestamp_format of None means the field is already ISO 8601
+# and is parsed directly with fromisoformat instead. This is the
+# FULL registry of every log type known across all stacks this
+# script may ever be deployed for. A given instance only serves the
+# subset listed in its own LOG_API_ENABLED_FILES environment
+# variable -- see load_enabled_files() below. Keeping the full
+# registry here (rather than one map per stack) means this file
+# never has to fork; only the enabled-set env var differs per
+# deployment.
+LOG_FILE_MAP = {
+    "nginx_access": {
+        "line_format": "json",
+        "path": "/var/log/nginx/nginx_access.log",
+        "timestamp_field": ("TIME", "time_local"),
+        "timestamp_format": "%d/%b/%Y:%H:%M:%S %z",
+    },
+    "nextcloud_app": {
+        "line_format": "json",
+        "path": "/var/log/nextcloud.log",
+        "timestamp_field": ("time",),
+        "timestamp_format": None,
+    },
+    "mealie_app": {
+        "line_format": "json",
+        "path": "/var/log/mealie.log",
+        "timestamp_field": ("time",),
+        "timestamp_format": None,
+    },
+}
+
+
+
+def load_expected_token():
+    """
+    Reads the bearer token (LOG_API_TOKEN) this instance requires from
+    the environment at startup, and fails fast if it is missing.
+
+    Returns:
+        str: the expected bearer token value.
+
+    Raises:
+        RuntimeError: if LOG_API_TOKEN is unset, so the container fails
+            to start rather than silently serving with no real auth.
+    """
+    token = os.environ.get("LOG_API_TOKEN")
+    if not token:
+        raise RuntimeError(
+            "LOG_API_TOKEN is not set. Refusing to start without an "
+            "explicit bearer token, since an unset token here would "
+            "otherwise mean this endpoint accepts any/no credential."
+        )
+    return token
+
+
+
+def load_enabled_files():
+    """
+    Reads which LOG_FILE_MAP keys this specific instance is allowed
+    to serve, from the environment.
+
+    Parses LOG_API_ENABLED_FILES as a comma-separated list of keys,
+    e.g. "nginx_access,mealie_app". Every key listed must also
+    exist in LOG_FILE_MAP; an unrecognized key here is a deployment
+    misconfiguration and fails startup loudly rather than silently
+    being ignored. Whitespace around each key is stripped so a
+    compose.yaml value spanning a line break doesn't accidentally
+    produce an unmatched key.
+
+    Returns:
+        set[str]: the set of file keys this instance may serve.
+
+    Raises:
+        RuntimeError: if LOG_API_ENABLED_FILES is unset, or if it
+            names a key not present in LOG_FILE_MAP.
+    """
+    raw_value = os.environ.get("LOG_API_ENABLED_FILES")
+    if not raw_value:
+        raise RuntimeError(
+            "LOG_API_ENABLED_FILES is not set. Refusing to start "
+            "without an explicit list of file keys this instance "
+            "may serve, since an unset value here would otherwise "
+            "mean no files are servable at all."
+        )
+    enabled = {key.strip() for key in raw_value.split(",") if key.strip()}
+    unknown = enabled - set(LOG_FILE_MAP.keys())
+    if unknown:
+        raise RuntimeError(
+            "LOG_API_ENABLED_FILES names unrecognized key(s): "
+            + ", ".join(sorted(unknown))
+            + ". Valid keys are: "
+            + ", ".join(sorted(LOG_FILE_MAP.keys()))
+        )
+    return enabled
+
+
+
+EXPECTED_TOKEN = load_expected_token()
+ENABLED_FILES = load_enabled_files()
+LISTEN_PORT = int(os.environ.get("LOG_API_PORT", "8090"))
+
+
+
+def parse_since_param(raw_value):
+    """
+    Validates and normalizes the caller-supplied 'since' query
+    parameter into a directly comparable datetime.
+
+    Parses an RFC3339 UTC timestamp (e.g. '2026-09-06T15:00:00Z')
+    into a timezone-aware UTC datetime. Rejecting a malformed
+    'since' here, rather than downstream, keeps the per-line
+    filtering loop simple and fast.
+
+    Args:
+        raw_value (str): the raw 'since' query parameter value.
+
+    Returns:
+        datetime: a timezone-aware UTC datetime.
+
+    Raises:
+        ValueError: if raw_value cannot be parsed as RFC3339 UTC.
+    """
+    # Accept a trailing 'Z' as UTC, since Python's fromisoformat did
+    # not natively handle 'Z' prior to 3.11, and this keeps behavior
+    # consistent regardless of the exact 3.x version running here.
+    normalized = raw_value.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+
+def extract_line_timestamp(parsed_line, field_path):
+    """
+    Walks a nested-field path to pull the timestamp value out of one
+    parsed JSON log line.
+
+    Log lines in this environment nest their timestamp under a
+    parent key (e.g. {"TIME": {"time_local": "..."}}), rather
+    than at the top level, though some (e.g. an application log)
+    keep it at the top level as a single-element path. field_path
+    is a tuple of keys to walk in order to reach the actual value,
+    so this same function works for any log format listed in
+    LOG_FILE_MAP without a format-specific branch.
+
+    Args:
+        parsed_line (dict): one JSON log line, already parsed.
+        field_path (tuple): ordered keys to walk to the timestamp.
+
+    Returns:
+        str or None: the raw timestamp string, or None if any key in
+            field_path is missing from this line.
+    """
+    current = parsed_line
+    for key in field_path:
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    return current
+
+
+
+def filter_log_lines(file_key, since_dt):
+    """
+    Reads one allowed log file and yields only the lines at or after
+    the requested 'since' timestamp.
+
+    Streams the target file line by line rather than loading it
+    into memory at once, since these files grow unbounded over
+    time. Each line is parsed as JSON; lines that fail to parse,
+    or that are missing the expected timestamp field, are skipped
+    rather than raising, so one malformed line cannot break the
+    whole response. Timestamp parsing branches on whether the
+    target file's LOG_FILE_MAP entry specifies a strptime format
+    string or None; None means the field is already ISO 8601 and
+    can be parsed directly with fromisoformat.
+
+    Args:
+        file_key (str): a key present in LOG_FILE_MAP.
+        since_dt (datetime): timezone-aware UTC cutoff.
+
+    Yields:
+        str: raw JSON lines (already valid JSON text) that are at or
+            after since_dt, in file order.
+
+    Raises:
+        KeyError: if file_key is not present in LOG_FILE_MAP. Callers
+            must check this before calling, this function does not
+            validate it itself.
+    """
+    entry = LOG_FILE_MAP[file_key]
+    file_path = entry["path"]
+    field_path = entry["timestamp_field"]
+    timestamp_format = entry["timestamp_format"]
+
+    with open(file_path, "r", encoding="utf-8") as log_file:
+        for raw_line in log_file:
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            try:
+                parsed_line = json.loads(raw_line)
+            except json.JSONDecodeError:
+                # A malformed line should not break the whole
+                # response, so skip it and move on.
+                continue
+
+            raw_timestamp = extract_line_timestamp(
+                parsed_line, field_path
+            )
+            if raw_timestamp is None:
+                continue
+
+            try:
+                if timestamp_format is None:
+                    line_dt = datetime.fromisoformat(raw_timestamp)
+                else:
+                    line_dt = datetime.strptime(
+                        raw_timestamp, timestamp_format
+                    )
+            except ValueError:
+                continue
+
+            if line_dt.tzinfo is None:
+                line_dt = line_dt.replace(tzinfo=timezone.utc)
+            line_dt = line_dt.astimezone(timezone.utc)
+
+            if line_dt >= since_dt:
+                yield raw_line
+
+
+
+class LogApiRequestHandler(BaseHTTPRequestHandler):
+    """
+    HTTP request handler implementing the single supported route,
+    GET /logs, with bearer-token auth and query-parameter validation.
+
+    This class intentionally supports exactly one route. Any
+    other path returns 404. Any request missing or presenting the
+    wrong bearer token returns 401 before any file is touched. A
+    'file' value not present in LOG_FILE_MAP at all returns 400
+    (unrecognized across every stack); a 'file' value that is a
+    real, known log type but not one this instance serves returns
+    404 (recognized, just not here).
+    """
+
+    def _send_json_error(self, status_code, message):
+        """
+        Writes a small JSON error body and the given HTTP status
+        code back to the client.
+
+        Centralizes error responses so every failure path returns
+        the same shape ({"error": "..."}), which keeps the caller
+        side (the OpenClaw capture module) simple to write against.
+
+        Args:
+            status_code (int): HTTP status code to send.
+            message (str): human-readable error message.
+
+        Returns:
+            None
+        """
+        body = json.dumps({"error": message}).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+
+    def _check_auth(self):
+        """
+        Validates the Authorization header against the expected
+        bearer token.
+
+        Looks for a header of the form 'Authorization: Bearer
+        <token>' and compares it to EXPECTED_TOKEN. Any mismatch,
+        including a missing header entirely, is treated the same
+        way, so a caller cannot distinguish 'no token sent' from
+        'wrong token sent' through timing or response differences.
+
+        Returns:
+            bool: True if the request is authorized, False otherwise.
+        """
+        auth_header = self.headers.get("Authorization", "")
+        expected = "Bearer " + EXPECTED_TOKEN
+        return auth_header == expected
+
+
+
+    def do_GET(self):
+        """
+        Entry point for every GET request; routes, authenticates,
+        validates, and streams the filtered response.
+
+        Only responds to the literal path '/logs'. All validation
+        (auth, then query parameters, then file access) happens
+        before any log file is opened, so an unauthorized or
+        malformed request never touches disk.
+
+        Returns:
+            None
+        """
+        parsed_url = urlparse(self.path)
+
+        if parsed_url.path != "/logs":
+            self._send_json_error(404, "Not found.")
+            return
+
+        if not self._check_auth():
+            self._send_json_error(401, "Missing or invalid token.")
+            return
+
+        query = parse_qs(parsed_url.query)
+        file_key = query.get("file", [None])[0]
+        since_raw = query.get("since", [None])[0]
+
+        if file_key is None:
+            self._send_json_error(
+                400, "Missing required 'file' parameter."
+            )
+            return
+
+        if file_key not in LOG_FILE_MAP:
+            self._send_json_error(
+                400,
+                f"Unrecognized 'file' key '{file_key}'. Known keys "
+                "across all stacks: "
+                + ", ".join(sorted(LOG_FILE_MAP.keys())),
+            )
+            return
+
+        if file_key not in ENABLED_FILES:
+            self._send_json_error(
+                404,
+                f"'{file_key}' is a known log type but is not "
+                "served by this instance. This instance serves: "
+                + ", ".join(sorted(ENABLED_FILES)),
+            )
+            return
+
+        if since_raw is None:
+            self._send_json_error(
+                400, "Missing required 'since' parameter."
+            )
+            return
+
+        try:
+            since_dt = parse_since_param(since_raw)
+        except ValueError:
+            self._send_json_error(
+                400,
+                "Could not parse 'since' as an RFC3339 UTC "
+                "timestamp, e.g. 2026-09-06T15:00:00Z.",
+            )
+            return
+
+        # Confirm the target file is actually openable before any
+        # response headers are sent, so a missing/unreadable file
+        # produces a real 500 rather than a silent empty 200 body.
+        file_path = LOG_FILE_MAP[file_key]["path"]
+        try:
+            probe_handle = open(file_path, "r", encoding="utf-8")
+            probe_handle.close()
+        except OSError as open_error:
+            self._send_json_error(
+                500,
+                f"Could not open log file for '{file_key}': "
+                f"{open_error.strerror}.",
+            )
+            return
+
+        # Response is streamed as newline-delimited JSON. Headers are
+        # sent before the body is generated, since the exact response
+        # size is not known ahead of time for a streamed file read.
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.end_headers()
+
+        for line in filter_log_lines(file_key, since_dt):
+            self.wfile.write(line.encode("utf-8"))
+            self.wfile.write(b"\n")
+
+
+
+    def log_message(self, format_string, *args):
+        """
+        Overrides BaseHTTPRequestHandler's default stderr access
+        logging with a minimal, consistent line.
+
+        The default implementation writes a combined-log-style
+        line that includes the full request line and status,
+        which is fine, but this override keeps the format
+        explicit and stable in case log_api_server's own stdout
+        is later fed into anything log-format-sensitive.
+
+        Args:
+            format_string (str): printf-style format string.
+            *args: values to interpolate into format_string.
+
+        Returns:
+            None
+        """
+        print(
+            "%s - - [%s] %s"
+            % (
+                self.address_string(),
+                self.log_date_time_string(),
+                format_string % args,
+            )
+        )
+
+
+
+def run_server():
+    """
+    Starts the threading HTTP server and blocks until interrupted.
+
+    Uses ThreadingHTTPServer rather than the single-threaded
+    HTTPServer so one slow client streaming a large response
+    cannot block a concurrent request from a second caller. This
+    is expected to have very low concurrency (one internal
+    consumer, a handful of requests per day), so this is a
+    precaution rather than a load-driven requirement.
+
+    Returns:
+        None
+    """
+    server_address = ("0.0.0.0", LISTEN_PORT)
+    httpd = ThreadingHTTPServer(server_address, LogApiRequestHandler)
+    print(f"log_api_server listening on port {LISTEN_PORT}")
+    httpd.serve_forever()
+
+
+
+if __name__ == "__main__":
+    run_server()
+EOF
+
+
+
+# -----------------------------------------------------------------------------
+# Create the 'health_check.py' script
+# -----------------------------------------------------------------------------
+# Hard coding the script into the Dockerfile allows for mobility
+#   *  Only one file (this Dockerfile) is required to spin up this container
+RUN cat <<'EOF' > /app/health_check.py
+import os
+import socket
+import sys
+
+
+
+def check_port_open():
+    """
+    Attempts a raw TCP connect to the local log_api_ server port and
+    reports success or failure via exit code.
+
+    Uses a short timeout so a hung process is reported as
+    unhealthy promptly rather than leaving Docker waiting.
+    Any exception during the connection attempt is treated as a
+    failed healthcheck, since the specific failure reason
+    (refused, timed out, DNS, etc.) does not change what Docker
+    should do in response.
+
+    Returns:
+        bool: True if the port accepted a connection, False
+            otherwise.
+    """
+    port = int(os.environ.get("LOG_API_PORT", "8090"))
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=3):
+            return True
+    except OSError:
+        return False
+
+
+
+if __name__ == "__main__":
+    if check_port_open():
+        sys.exit(0)
+    sys.exit(1)
+EOF
+
+
+WORKDIR /app
+
+RUN chmod 644 /app/log_api_server.py /app/health_check.py
+
+# Runs as a non-root user, since this process never needs elevated
+# privileges to read a bind-mounted, read-only log file.
+RUN adduser --disabled-password --gecos "" --uid 1000 logapi
+USER logapi
+
+# --- NEXTCLOUD ONLY ---
+# Runs as the pre-existing 'www-data' user (UID/GID 33) rather than
+# creating a separate 'logapi' identity.  This is a Nextcloud only
+# requirement due to the permissions/ACLs set on the 'nextcloud.log'
+# file
+#USER www-data
+
+EXPOSE 8090
+CMD ["python3", "/app/log_api_server.py"]
