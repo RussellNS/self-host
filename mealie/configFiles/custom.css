@@ -1,0 +1,326 @@
+/* =========
+   Base light theme overrides
+   ========= */
+:root {
+  /* Core brand */
+  --color-primary: #00669F;
+  --color-primary-hover: #00527F;
+  --color-primary-soft: #E0F2FB;
+
+  --color-accent: #0094C8;
+  --color-accent-hover: #0077A0;
+
+  --color-secondary: #003F63;
+  --color-secondary-soft: #E3EDF4;
+
+  /* Semantic colors */
+  --color-success: #2E8B57;
+  --color-success-soft: #E3F4EB;
+
+  --color-info: #1E88E5;
+  --color-info-soft: #E3F1FB;
+
+  --color-warning: #FF8F00;
+  --color-warning-soft: #FFF3E0;
+
+  --color-error: #D84343;
+  --color-error-soft: #FDE4E4;
+
+  /* Common surfaces */
+  --color-surface: #FFFFFF;
+  --color-surface-alt: #F5F7FA;
+  --color-border-subtle: #D5DFEA;
+  --color-text-main: #1F2933;
+  --color-text-muted: #6B7280;
+}
+
+/* =========
+   Global elements
+   ========= */
+
+/* App background & main content */
+body {
+  background-color: var(--color-surface);
+  color: var(--color-text-main);
+}
+
+/* Top bar / header */
+header,
+.app-bar,
+.navbar,
+.topbar {
+  background-color: var(--color-primary);
+  color: #FFFFFF;
+}
+
+/* Sidebar / navigation */
+.sidebar,
+.nav-drawer,
+aside {
+  background-color: var(--color-secondary);
+  color: #FFFFFF;
+}
+
+.sidebar a,
+.nav-drawer a {
+  color: #E5F3FF;
+}
+
+.sidebar a:hover,
+.nav-drawer a:hover {
+  background-color: var(--color-primary-hover);
+}
+
+/* Cards / panels */
+.card,
+.panel,
+.v-card {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+}
+
+/* Headings */
+h1, h2, h3, h4 {
+  color: var(--color-primary);
+}
+
+/* =========
+   Buttons
+   ========= */
+
+/* Primary buttons */
+button,
+.btn-primary,
+.v-btn.primary {
+  background-color: var(--color-primary);
+  color: #FFFFFF;
+  border-color: var(--color-primary);
+}
+
+button:hover,
+.btn-primary:hover,
+.v-btn.primary:hover {
+  background-color: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+/* Accent buttons */
+.btn-accent,
+.v-btn.accent {
+  background-color: var(--color-accent);
+  color: #FFFFFF;
+  border-color: var(--color-accent);
+}
+
+.btn-accent:hover,
+.v-btn.accent:hover {
+  background-color: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+/* Text / ghost buttons */
+.btn-text,
+.v-btn.text {
+  color: var(--color-primary);
+}
+
+.btn-text:hover,
+.v-btn.text:hover {
+  background-color: var(--color-primary-soft);
+}
+
+/* =========
+   Alerts / chips / badges
+   ========= */
+
+/* Success */
+.alert-success,
+.v-alert.success,
+.badge-success,
+.chip-success {
+  background-color: var(--color-success-soft);
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+
+/* Info */
+.alert-info,
+.v-alert.info,
+.badge-info,
+.chip-info {
+  background-color: var(--color-info-soft);
+  border-color: var(--color-info);
+  color: var(--color-info);
+}
+
+/* Warning */
+.alert-warning,
+.v-alert.warning,
+.badge-warning,
+.chip-warning {
+  background-color: var(--color-warning-soft);
+  border-color: var(--color-warning);
+  color: var(--color-warning);
+}
+
+/* Error */
+.alert-error,
+.v-alert.error,
+.badge-error,
+.chip-error {
+  background-color: var(--color-error-soft);
+  border-color: var(--color-error);
+  color: var(--color-error);
+}
+
+/* =========
+   Inputs / forms
+   ========= */
+
+input,
+select,
+textarea,
+.v-text-field input {
+  border: 1px solid var(--color-border-subtle);
+  background-color: #FFFFFF;
+  color: var(--color-text-main);
+}
+
+input:focus,
+select:focus,
+textarea:focus,
+.v-text-field input:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 1px var(--color-primary-soft);
+}
+
+/* =========
+   Dark theme overrides
+   ========= */
+
+[data-theme="dark"],
+html.dark {
+  --color-primary: #00669F;
+  --color-primary-hover: #0094C8;
+  --color-primary-soft: #0B2535;
+
+  --color-accent: #0094C8;
+  --color-accent-hover: #00B0EC;
+
+  --color-secondary: #001F33;
+  --color-secondary-soft: #071521;
+
+  --color-success: #4CAF7A;
+  --color-success-soft: #0E1F18;
+
+  --color-info: #4C9DFF;
+  --color-info-soft: #0B1726;
+
+  --color-warning: #FFB74D;
+  --color-warning-soft: #261A08;
+
+  --color-error: #FF6B6B;
+  --color-error-soft: #2A1010;
+
+  --color-surface: #0B1220;
+  --color-surface-alt: #111827;
+  --color-border-subtle: #1F2937;
+  --color-text-main: #E5E7EB;
+  --color-text-muted: #9CA3AF;
+}
+
+[data-theme="dark"] body,
+html.dark body {
+  background-color: var(--color-surface);
+  color: var(--color-text-main);
+}
+
+[data-theme="dark"] header,
+[data-theme="dark"] .app-bar,
+[data-theme="dark"] .navbar,
+[data-theme="dark"] .topbar,
+html.dark header,
+html.dark .app-bar,
+html.dark .navbar,
+html.dark .topbar {
+  background-color: var(--color-primary);
+  color: #FFFFFF;
+}
+
+[data-theme="dark"] .sidebar,
+[data-theme="dark"] .nav-drawer,
+[data-theme="dark"] aside,
+html.dark .sidebar,
+html.dark .nav-drawer,
+html.dark aside {
+  background-color: var(--color-secondary);
+  color: #E5E7EB;
+}
+
+[data-theme="dark"] .card,
+[data-theme="dark"] .panel,
+[data-theme="dark"] .v-card,
+html.dark .card,
+html.dark .panel,
+html.dark .v-card {
+  background-color: var(--color-surface-alt);
+  border: 1px solid var(--color-border-subtle);
+}
+
+[data-theme="dark"] button,
+[data-theme="dark"] .btn-primary,
+[data-theme="dark"] .v-btn.primary,
+html.dark button,
+html.dark .btn-primary,
+html.dark .v-btn.primary {
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #FFFFFF;
+}
+
+[data-theme="dark"] button:hover,
+[data-theme="dark"] .btn-primary:hover,
+[data-theme="dark"] .v-btn.primary:hover,
+html.dark button:hover,
+html.dark .btn-primary:hover,
+html.dark .v-btn.primary:hover {
+  background-color: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+/* Dark alerts */
+[data-theme="dark"] .alert-success,
+[data-theme="dark"] .v-alert.success,
+html.dark .alert-success,
+html.dark .v-alert.success {
+  background-color: var(--color-success-soft);
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+
+[data-theme="dark"] .alert-info,
+[data-theme="dark"] .v-alert.info,
+html.dark .alert-info,
+html.dark .v-alert.info {
+  background-color: var(--color-info-soft);
+  border-color: var(--color-info);
+  color: var(--color-info);
+}
+
+[data-theme="dark"] .alert-warning,
+[data-theme="dark"] .v-alert.warning,
+html.dark .alert-warning,
+html.dark .v-alert.warning {
+  background-color: var(--color-warning-soft);
+  border-color: var(--color-warning);
+  color: var(--color-warning);
+}
+
+[data-theme="dark"] .alert-error,
+[data-theme="dark"] .v-alert.error,
+html.dark .alert-error,
+html.dark .v-alert.error {
+  background-color: var(--color-error-soft);
+  border-color: var(--color-error);
+  color: var(--color-error);
+}

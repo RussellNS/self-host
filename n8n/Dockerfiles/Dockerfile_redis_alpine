@@ -1,0 +1,15 @@
+ARG IMAGE_VERSION
+FROM redis:${IMAGE_VERSION}
+
+#COPY scripts/run.sh /scripts/run.sh
+
+#RUN apk add --no-cache pwgen tzdata nano && \
+RUN apk add --no-cache \
+    nano \
+    && rm -f /var/cache/apk/*
+
+#EXPOSE 3306
+
+#VOLUME ["/var/lib/mysql"]
+
+#ENTRYPOINT ["/scripts/run.sh"]

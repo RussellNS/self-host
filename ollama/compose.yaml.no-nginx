@@ -1,0 +1,111 @@
+# NETWORK INFO
+# The 'networks:' section assigns a service to a user created network.
+#
+# In order for this 'docker-compose.yml' file to work, the following Docker network
+# must be created before hand:
+#
+#   Use this for QNAP NAS devices
+#   docker network create -d qnet --ipam-driver=qnet --ipam-opt=iface=eth4 --subnet=198.51.100.0/24 --gateway 198.51.100.1 macvlan_net --opt=iface=eth4
+#     *  Reference: https://qnap-dev.github.io/container-station-api/qnet.html
+#
+#   Use this for standard Docker
+#   docker network create -d macvlan --subnet=198.51.100.0/24 --gateway=198.51.100.1 -o parent=ens33 macvlan_net
+#                            |     |          |           |           |        |           |   | |         |
+#                            +-----+          +-----------+           +--------+           +---+ +----+----+
+#                               |                   |                      |                 |        |
+#   This needs to match the ----+                   |                      |                 |        |
+#   driver used for the                             |                      |                 |        |
+#   network (the default driver                     |                      |                 |        |
+#   for macvlan networks in Docker                  |                      |                 |        |
+#   is 'macvlan', the default                       |                      |                 |        |
+#   for QNAP NAS is 'qnet'.                         |                      |                 |        |
+#                                                   |                      |                 |        |
+#   This needs to match the subnet in  -------------+                      |                 |        |
+#   your environment.                                                      |                 |        |
+#                                                                          |                 |        |
+#   This needs to match the IP of your ------------------------------------+                 |        |
+#   gateway.                                                                                 |        |
+#                                                                                            |        |
+#   This needs to match the name of    ------------------------------------------------------+        |
+#   your interface (NIC).                                                                             |
+#                                                                                                     |
+#   This can be any user assigned ------------------+-------------------------------------------------+
+#   value, but both of these need                   |
+#   to match.                                       |
+#                                                   |
+#      +--------------------------------------------+
+#      |
+# +----+----+
+# |         |
+networks:
+  macvlan_net:
+    external: true
+
+#volumes:
+#  data:
+#  openWebUI:
+
+services:
+  # Downloading models:
+  #   > docker exec -it ollama_app bash
+  #   > ollama pull llama3.2
+  #   > ollama pull deepseek-r1
+  # More info:
+  #   *  https://github.com/ollama/ollama
+  ollama:
+#    image: ollama/ollama:0.1.34
+    image: ollama/ollama:rocm
+    container_name: ollama_app
+    hostname: ollama
+#    ports:
+#      - "11434:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            capabilities: ["gpu"]
+            count: all
+    healthcheck:
+      test:  [ "CMD-SHELL", "bash", "-c", "{ printf >&3 'GET / HTTP/1.0\\r\\n\\r\\n'; cat <&3; } 3<>/dev/tcp/localhost/11434 | grep -iq 'Ollama is running' || exit 1"  ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    volumes:
+      # Volumes used for TESTING (they get deleted)
+#      - data:/root/.ollama
+      # Volumes used for PERSISTANT DATA (NOT TESTING)
+      - /path/to/volumes/ollama_data:/root/.ollama
+
+  openWebUI:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: ollama_web
+    hostname: openwebui
+    restart: always
+    networks:
+      default:
+      macvlan_net:
+        ipv4_address: 192.0.2.45
+        # Docker generated MAC addresses are "02:42" + the HEX value of
+        # the IP address.  For example:
+        #   * IP Address:        "172.17.0.2"
+        #   * HEX Value:        "ac.11.00.02"
+        #   * Docker MAC: "02:42:ac:11:00:02"
+        mac_address: 02:42:0A:0A:05:2D
+#    ports:
+#      - "3000:8080"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+#    depends_on:
+#      - ollama
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Volumes used for TESTING (they get deleted)
+#      - openWebUI:/app/backend/data
+      # Volumes used for PERSISTANT DATA (NOT TESTING)
+      - /path/to/volumes/ollama_data:/app/backend/data

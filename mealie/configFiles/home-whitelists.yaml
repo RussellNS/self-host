@@ -1,0 +1,11 @@
+name: home/whitelist
+description: "Whitelist trusted home lab and management VLANs"
+whitelist:
+  reason: "home trusted lab/management subnets"
+#  ip:
+#    - "192.0.2.0/24"   # Home Lab
+  cidr:
+    - "192.0.2.0/24"   # Home Lab
+    - "203.0.113.0/24"  # Home Wi-Fi
+    - "203.0.113.0/24"  # VPN - WireGuard
+    - "203.0.113.0/24"  # VPN - OpenVPN

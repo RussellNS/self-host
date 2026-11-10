@@ -1,0 +1,5 @@
+# Check this website for new images:
+#   *  https://github.com/nextcloud/HaRP
+ARG IMAGE_VERSION
+FROM ghcr.io/nextcloud/nextcloud-appapi-harp:${IMAGE_VERSION}
+

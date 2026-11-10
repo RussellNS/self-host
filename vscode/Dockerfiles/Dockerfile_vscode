@@ -1,0 +1,192 @@
+# Modified Dockerfile based on the work found here:
+#   *  https://github.com/nerasse/my-code-server
+#
+# To check for the latest version of VS Code:
+#   *  https://code.visualstudio.com/download
+#      NOTE: The version is in a banner at the top of the page.
+#            Click the version link for release notes.
+#
+# To check inside a VS Code (bash) terminal window, run the script below:
+#
+#      INSTALLED=$(code --version | head -n1) && \
+#      LATEST=$(curl -s https://update.code.visualstudio.com/api/update/linux-deb-x64/stable/latest | jq -r '.name') && \
+#      echo "Installed: $INSTALLED | Latest: $LATEST"
+
+# -----------------------------------------------------------------------------
+# MAINTENANCE NOTE: Why Debian Bookworm vs. Trixie
+# -----------------------------------------------------------------------------
+# As of 2024-2026, intentionally hard coding to 'bookworm' (Stable).
+# Trixie uses newer systemd scripts that attempt to lock /etc/group during
+# 'apt install', which fails under Docker's default security profile.
+#
+# Microsoft's APT repository works for Debian 12 (Bookworm) but there is no
+# stable Microsoft APT package for Debian 13 (Trixie). The recommended path on
+# Trixie is to install PowerShell via the GitHub universal .deb package
+# instead. Attempting to install PowerShell on Trixie via the .deb package also
+# hits a dependency problem--it requires libicu74 or older versions, which
+# Trixie doesn't provide in the expected form.
+#
+# Additional note, Microsoft, Docker, and other major vendors don't officially
+# support Debian "Testing" until it becomes the "Stable" release.  Currently,
+# Trixie is the "Testing" branch.  While it has newer packages (like
+# Python 3.12+ or newer GLIBC), it is subject to breaking changes. Bookworm
+# is "Stable," meaning security updates are consistent and the build process
+# is predictable.
+#
+# To upgrade this image build from Bookworm to Trixie without using the
+# Microsoft repo, use these steps:
+#   1)  Remove the RUN commands related to the "Microsoft repo for PowerShell"
+#   2)  Add in the RUN commands to install Powershell from .deb download:
+#         # Install PowerShell on Trixie via GitHub release (MS apt repo not supported on Trixie)
+#         RUN PWSH_VERSION=7.4.6 \
+#             && wget -q "https://github.com/PowerShell/PowerShell/releases/download/v${PWSH_VERSION}/powershell_${PWSH_VERSION}-1.deb_amd64.deb" -O /tmp/powershell.deb \
+#             && apt-get install -y --no-install-recommends /tmp/powershell.deb \
+#             && rm /tmp/powershell.deb
+#
+# Bookworm EOL: Standard support until June 2026; LTS until 2028.
+# Move to Trixie/Debian 13 only once it becomes the 'Stable' release and 
+# Microsoft officially supports it in their repos.
+# -----------------------------------------------------------------------------
+# Use Debian latest as the base image
+ARG IMAGE_VERSION
+FROM debian:${IMAGE_VERSION}
+
+
+# -----------------------------------------------------------------------------
+# Build Arguments & Environment Variables
+# -----------------------------------------------------------------------------
+# Avoid prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# -----------------------------------------------------------------------------
+# Create a 'policy-rc.d' bypass policy
+# -----------------------------------------------------------------------------
+# In a standard Debian OS, when a package like ssh is installed, it calls a
+# script to start the service. In Docker, there is no "system init" running
+# during the build phase, so the script fails.
+#
+# The RUN below Prevents services from starting during the build, and breaking
+# the build.
+
+#RUN apt-get update && \
+    # This prevents services from starting during the install process
+
+# -----------------------------------------------------------------------------
+# Install Dependencies
+# -----------------------------------------------------------------------------
+# Install optional & required packages (without software-properties-common as it's no more available in Trixie)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        # Required
+        curl \
+        wget \
+        apt-transport-https \
+        gnupg2 \
+        # Optional
+        openssh-client \
+        nano \
+        net-tools \
+        iputils-ping \
+        netcat-traditional \
+        sudo \
+        build-essential \
+        gnupg \
+        ca-certificates \
+        lsb-release \
+        unzip \
+        git \
+        jq \
+        socat \
+        dos2unix \
+    && apt-get clean \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+
+# DEBUG - The 'RUN' line below causes the Docker build process to pause
+# DEBUG - indefinitely.  This can be used to pause a docker build, enter the
+# DEBUG - container in the middle of the build, then expand on Docker build
+# DEBUG - logic or identify and troubleshoot Docker build problems.  Perform
+# DEBUG - these steps to use:
+# DEBUG -   1) Build the Docker image using one of these commands:
+# DEBUG -        *  DOCKER_BUILDKIT=0 docker build -f <Dockerfile> .
+# DEBUG -        *  DOCKER_BUILDKIT=0 docker compose up
+# DEBUG -   2) When the build pauses, press CRTL+z (not CTRL+c).
+# DEBUG -   3) Enter 'docker container ls' to view container name.
+# DEBUG -   4) Use 'docker exec -it <container_name> sh' (or 'bash') to enter
+# DEBUG -      unfinished build.
+# DEBUG -   5) Manually run your commands inside the container.
+# DEBUG - Comment or delete when not needed.
+#RUN echo "##### DEBUG - Docker build pause #####" && echo "Use the following commands:" && echo "    CTRL+z" && echo "    docker container ls # get container name" && echo " >
+
+# Add Microsoft repo for PowerShell
+#ARG VERSION_ID
+RUN VERSION_ID=$(awk -F= '/^VERSION_ID=/ {gsub(/"/, "", $2); print $2}' /etc/os-release) \
+    && wget -q https://packages.microsoft.com/config/debian/$VERSION_ID/packages-microsoft-prod.deb \
+    && dpkg -i packages-microsoft-prod.deb \
+    && rm packages-microsoft-prod.deb
+
+# Add Microsoft repo for VS Code
+RUN wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /tmp/packages.microsoft.gpg \
+    && install -o root -g root -m 644 /tmp/packages.microsoft.gpg /etc/apt/trusted.gpg.d/ \
+    && echo "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/trusted.gpg.d/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list \
+    && rm /tmp/packages.microsoft.gpg
+
+# Install VS Code using the MS Repo above
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        code \
+    && apt-get clean \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install dependencies for these development languages:
+#   *  JavaScript
+#   *  Python
+#   *  PowerShell
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        # Python
+        python3 \
+        python3-pip \
+        python3-venv \
+        # PowerShell
+        libssl-dev \
+        libcurl4 \
+        libunwind8 \
+        apt-transport-https \
+        powershell \
+    && apt-get clean \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install dependencie(s) for these development environment(s):
+#   *  Windmill
+#      -  Node.js v20 LTS from NodeSource (Debian apt repo is too old)
+RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    && apt-get install -y --no-install-recommends \
+        nodejs \
+    && apt-get clean \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the Windmill CLI:
+RUN npm install -g windmill-cli
+
+# Install the Claude Code CLI:
+RUN npm install -g @anthropic-ai/claude-code
+
+# Create a non-root user
+RUN useradd -m vscodeuser && \
+    echo 'vscodeuser ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/vscodeuser && \
+    chmod 0444 /etc/sudoers.d/vscodeuser && \
+    usermod -aG sudo vscodeuser
+
+# Switch to the non-root user
+USER vscodeuser
+
+# Set the home directory for the non-root user
+ENV HOME=/home/vscodeuser
+
+# Run the script when the container starts
+#ENTRYPOINT ["bash", "/app/start.sh"]

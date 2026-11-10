@@ -1,0 +1,2 @@
+ARG IMAGE_VERSION
+FROM lfnovo/open_notebook:${IMAGE_VERSION}

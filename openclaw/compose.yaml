@@ -1,0 +1,263 @@
+# NETWORK INFO
+# The 'networks:' section assigns a service to a user created network.
+#
+# In order for this 'compose.yaml' file to work, the following Docker network
+# must be created before hand:
+#
+#   Use this for QNAP NAS devices
+#   docker network create -d qnet --ipam-driver=qnet --ipam-opt=iface=eth4 --subnet=198.51.100.0/24 --gateway 198.51.100.1 macvlan_net --opt=iface=eth4
+#     *  Reference: https://qnap-dev.github.io/container-station-api/qnet.html
+#
+#   Use this for standard Docker
+#   docker network create -d macvlan --subnet=198.51.100.0/24 --gateway=198.51.100.1 -o parent=ens33 macvlan_net
+#                            |     |          |             |           |          |           |   | |         |
+#                            +-----+          +-------------+           +----------+           +---+ +----+----+
+#                               |                    |                       |                   |        |
+#   This needs to match the ----+                    |                       |                   |        |
+#   driver used for the                              |                       |                   |        |
+#   network (the default driver                      |                       |                   |        |
+#   for macvlan networks in Docker                   |                       |                   |        |
+#   is 'macvlan', the default                        |                       |                   |        |
+#   for QNAP NAS is 'qnet'.                          |                       |                   |        |
+#                                                    |                       |                   |        |
+#   This needs to match the subnet in  --------------+                       |                   |        |
+#   your environment.                                                        |                   |        |
+#                                                                            |                   |        |
+#   This needs to match the IP of your --------------------------------------+                   |        |
+#   gateway.                                                                                     |        |
+#                                                                                                |        |
+#   This needs to match the name of    ----------------------------------------------------------+        |
+#   your interface (NIC).                                                                                 |
+#                                                                                                         |
+#   This can be any user assigned ------------------+-----------------------------------------------------+
+#   value, but both of these need                   |
+#   to match.                                       |
+#                                                   |
+#      +--------------------------------------------+
+#      |
+# +----+----+
+# |         |
+networks:
+  macvlan_net:
+    external: true
+
+x-all-services: &all-svcs
+  restart: unless-stopped
+#  dns_search: example.com
+  dns:
+    - 198.51.100.10
+  # Exclude/drop network capabilities for the container
+  cap_drop:
+    # Reduce the ability of a compromised agent to perform low-level (raw) network
+    # reconnaissance or packet manipulation from inside the container, but still
+    # allow higher level protocols, like: HTTP, HTTPS, and DNS, etc.
+    - NET_RAW
+    # Limits the agent's ability to change networking configs from inside the container
+    # without blocking network connections, like connecting to remote services,
+    # downloading files, etc.
+    - NET_ADMIN
+  security_opt:
+    - no-new-privileges:true
+
+x-all-health: &all-health
+  interval: 10m
+  timeout: 10s
+  retries: 5
+  start_period: 2m
+  start_interval: 10s
+
+services:
+  nginx:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_nginx-v1.30_stable-alpine
+      args:
+        IMAGE_VERSION: ${NGINX_VERSION}
+        MAXMIND_KEY: ${MAXMIND_KEY}
+    container_name: openclaw_nginx
+    hostname: openclaw-nginx
+    networks:
+      default:
+      macvlan_net:
+        ipv4_address: 192.0.2.35
+        mac_address: 02:42:0A:0A:05:2C
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-UTC}
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      <<: *all-health
+    volumes:
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+      - ./configFiles/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Files used for SSL/TLS CERTS - Cert files must be 1000:1000 (UID:GID)
+      - /path/to/ssl/n8n.cert.pem:/etc/ssl/example.com.pem:ro
+      - /path/to/ssl/n8n.example.com_privkey.pem:/etc/ssl/example.com.key:ro
+      - /path/to/ssl/n8n.example.com_fullchain.pem:/etc/ssl/example.com.fullchain.pem:ro
+
+  app:
+    <<: *all-svcs
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_openclaw
+      args:
+        IMAGE_VERSION: ${OPENCLAW_VERSION}
+    container_name: openclaw_app
+    hostname: openclaw-gw
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      # Host ports exposed for the gateway control UI / API and the bridge port.
+      - "18789:18789"
+      - "18790:18790"
+    environment:
+      # ENV variables defined in a '.env' file.  View with 'ls -lha'.
+      # AUTOMATIC LOADING
+      # If a '.env' file is in the same directory as the 'compose.yaml' file, it will
+      # automatically be loaded.
+      # USAGE
+      # Variables in this file can be referenced in the 'compose.yaml' file anywhere,
+      # not just in the 'environment:' section.  Referencing works like this:
+      #   *  ${variable_name}
+      #   *  ${variable_name:-default_value}
+      # NOTE: Putting ENV values in a '.env' file helps to obfuscate passwords from the 'compose.yaml'.
+      #       Doing it this way allows for seeking online help without
+      #       disclosing passwords.
+      TZ: ${TZ}
+      # NOTE: The <auth_token> can be created using the following command:
+      #         *  head /dev/urandom | LC_ALL=C tr -dc A-Za-z0-9 | head -c32 | cut -c 1-
+      #            (source: 'https://docs.cribl.io/stream/securing-auth-token/')
+      HOME: /home/node
+      OPENCLAW_HOME: /home/node
+      TERM: xterm-256color
+      # Pin container-side state, workspace, and config paths so host values
+      # written to `.env` cannot leak into runtime code that resolves these
+      # env vars inside the container (avoids the macOS-host-path /
+      # Linux-container EACCES failure class described in upstream #77436).
+      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
+      OPENCLAW_CONFIG_DIR: /home/node/.openclaw
+      OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
+      OPENCLAW_GATEWAY_TOKEN: ${GATEWAY_TOKEN:-}
+      # Empty means auto: Bonjour disables itself in detected containers.
+      # Set 0 only on host/macvlan/mDNS-capable networks; set 1 to force off.
+      OPENCLAW_DISABLE_BONJOUR: ${DISABLE_BONJOUR:-}
+      # Not a real credential — Ollama doesn't validate this. Any non-empty value
+      # satisfies OpenClaw's provider-auth check for local/LAN Ollama hosts.
+      OLLAMA_API_KEY: ollama-local
+#      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
+#      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+#      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    init: true
+    # 'command' Bind mode: "loopback" (127.0.0.1 only) or "lan" (0.0.0.0, network-accessible).
+    # "lan" requires OPENCLAW_GATEWAY_TOKEN below to be set and strong.
+    command:
+      [
+        "node",
+        "dist/index.js",
+        "gateway",
+        "--bind",
+        "lan",
+        "--port",
+        "18789",
+      ]
+    healthcheck:
+#      test: [ "CMD-SHELL", "node -e fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))", ]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted with 'docker-compose down -v')
+#      - data:/data:rw
+#      - workspace:/workspace:rw
+#      - openclaw_config:/home/node/.openclaw:rw
+#      - openclaw_authsecret:/home/node/.config/openclaw:rw
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+      - /path/to/volumes/openclaw_config:/home/node/.openclaw:rw
+#      - /path/to/volumes/openclaw_workspace:/home/node/.openclaw/workspace:rw
+      - /path/to/scripts/OpenClaw:/home/node/.openclaw/workspace:rw
+      - /path/to/volumes/openclaw_auth_secrets:/home/node/.config/openclaw:rw
+
+  cli:
+    <<: *all-svcs
+    dns: []
+    build:
+      context: .
+      dockerfile: ./Dockerfiles/Dockerfile_openclaw
+      args:
+        IMAGE_VERSION: ${OPENCLAW_VERSION}
+    container_name: openclaw_cli
+#    hostname: openclaw-cli
+#    network_mode: "service:gateway"
+    network_mode: "service:app"
+    depends_on:
+      app:
+        condition: service_healthy
+    profiles:
+      - cli
+    environment:
+      # ENV variables defined in a '.env' file.  View with 'ls -lha'.
+      # AUTOMATIC LOADING
+      # If a '.env' file is in the same directory as the 'compose.yaml' file, it will
+      # automatically be loaded.
+      # USAGE
+      # Variables in this file can be referenced in the 'compose.yaml' file anywhere,
+      # not just in the 'environment:' section.  Referencing works like this:
+      #   *  ${variable_name}
+      #   *  ${variable_name:-default_value}
+      # NOTE: Putting ENV values in a '.env' file helps to obfuscate passwords from the 'compose.yaml'.
+      #       Doing it this way allows for seeking online help without
+      #       disclosing passwords.
+      TZ: ${TZ}
+      # NOTE: The <auth_token> can be created using the following command:
+      #         *  head /dev/urandom | LC_ALL=C tr -dc A-Za-z0-9 | head -c32 | cut -c 1-
+      #            (source: 'https://docs.cribl.io/stream/securing-auth-token/')
+      HOME: /home/node
+      OPENCLAW_HOME: /home/node
+      TERM: xterm-256color
+      # Pin container-side state, workspace, and config paths so host values
+      # written to `.env` cannot leak into runtime code that resolves these
+      # env vars inside the container (avoids the macOS-host-path /
+      # Linux-container EACCES failure class described in upstream #77436).
+      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
+      OPENCLAW_CONFIG_DIR: /home/node/.openclaw
+      OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: ${OPENCLAW_ALLOW_INSECURE_PRIVATE_WS:-}
+      # Empty means auto: Bonjour disables itself in detected containers.
+      # Set 0 only on host/macvlan/mDNS-capable networks; set 1 to force off.
+      OPENCLAW_DISABLE_BONJOUR: ${OPENCLAW_DISABLE_BONJOUR:-}
+      # Not a real credential — Ollama doesn't validate this. Any non-empty value
+      # satisfies OpenClaw's provider-auth check for local/LAN Ollama hosts.
+      OLLAMA_API_KEY: ollama-local
+#      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
+      BROWSER: echo
+#      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+#      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    stdin_open: true
+    tty: true
+    init: true
+    entrypoint: ["node", "dist/index.js"]
+#    healthcheck:
+#      test: ["CMD-SHELL", "curl -f http://localhost:18789/healthz"]
+#      <<: *all-health
+    volumes:
+      # Volumes used for TESTING (they get deleted with 'docker-compose down -v')
+#      - data:/data:rw
+#      - workspace:/workspace:rw
+#      - openclaw_config:/home/node/.openclaw:rw
+#      - openclaw_authsecret:/home/node/.config/openclaw:rw
+      # Volumes used for PERSISTANT DATA (NOT TESTING - these do not get deleted, even with '-v')
+      - /path/to/volumes/openclaw_config:/home/node/.openclaw:rw
+#      - /path/to/volumes/openclaw_workspace:/home/node/.openclaw/workspace:rw
+      - /path/to/scripts/OpenClaw:/home/node/.openclaw/workspace:rw
+      - /path/to/volumes/openclaw_auth_secrets:/home/node/.config/openclaw:rw

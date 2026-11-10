@@ -1,0 +1,8 @@
+ARG IMAGE_VERSION
+FROM nextcloud:${IMAGE_VERSION}
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        nano \
+        jq \
+    && rm -rf /var/lib/apt/lists/*

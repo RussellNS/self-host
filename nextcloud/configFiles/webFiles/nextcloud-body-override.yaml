@@ -1,0 +1,67 @@
+# == Local override of the hub-managed 'crowdsecurity/appsec-default' ========
+# This file is bind-mounted over /etc/crowdsec/appsec-configs/appsec-default.yaml,
+# replacing the hub-installed version entirely. Because 'cscli hub upgrade'
+# won't touch a bind-mounted file, this override will NOT auto-update if
+# CrowdSec changes the upstream rule lists — periodically diff this against
+# the hub's current appsec-default.yaml and re-sync inband_rules/outofband_rules
+# by hand if needed.
+name: crowdsecurity/appsec-default
+
+# What happens when an in-band rule matches: hard-block the request.
+default_remediation: ban
+
+
+
+# == In-band rules ===========================================================
+# Evaluated synchronously, in real time, BEFORE the request reaches Nextcloud.
+# A match here blocks the request immediately (per default_remediation above).
+inband_rules:
+ - crowdsecurity/base-config      # Baseline sanity/safety rules
+ - crowdsecurity/vpatch-*         # Virtual patches for known CVEs
+ - crowdsecurity/generic-*        # Generic attack-pattern rules (SQLi, XSS, etc.)
+
+
+
+# == Out-of-band rules =======================================================
+# Evaluated asynchronously, AFTER the request has already been allowed
+# through. Used for detection/alerting on patterns not worth blocking
+# in real time (e.g. still-experimental or exploratory rules).
+outofband_rules:
+ - crowdsecurity/experimental-*
+ - crowdsecurity/appsec-generic-test
+
+
+
+# == pre_eval hook: runs once per request, before rule evaluation ============
+# This is where we fix the false-positive from alert #243: a legitimate
+# Nextcloud mobile-app chunked file upload was flagged and logged because
+# its body exceeded AppSec's default 10MB max-body-size ceiling, tripping
+# the built-in "request body exceeded maximum allowed size" check before
+# any actual rule ever ran (matched_zones: PRE_EVAL in that alert).
+#
+# Also covers alerts #273/#275: the Windmill expense-automation scripts PUT
+# directly to the standard (unchunked) WebDAV files endpoint
+# (/remote.php/dav/files/{uid}/...), not the chunked-upload endpoint above --
+# a ~10-11MB compiled receipts PDF tripped the same 10MB ceiling there. Same
+# rationale applies: these are binary blobs pattern-based WAF rules can't
+# meaningfully inspect anyway.
+pre_eval:
+  - filter: req.URL.Path startsWith "/remote.php/dav/uploads/" ||
+      req.URL.Path startsWith "/remote.php/dav/files/"
+    # Scopes this rule to Nextcloud's WebDAV chunked-upload endpoint AND
+    # the standard files endpoint — every other path on this stack keeps
+    # full body inspection and the default 10MB size ceiling untouched.
+    apply:
+      - DisableBodyInspection()
+      # Skips reading/processing the body for matching requests entirely.
+      # Two effects, both intentional here:
+      #   1. Body-based rules (BODY_ARGS, RAW_BODY, etc.) won't evaluate
+      #      against upload traffic — acceptable, since file upload bodies
+      #      are binary blobs that pattern-based WAF rules can't
+      #      meaningfully inspect anyway.
+      #   2. The max-body-size check itself is bypassed for these paths,
+      #      so large legitimate uploads (photos/videos from the
+      #      Nextcloud mobile app, PDFs from the expense automation) no
+      #      longer get flagged or blocked, regardless of size.
+      # Headers, URI, method, and other non-body zones are still evaluated
+      # normally for these requests — this only disables body inspection.

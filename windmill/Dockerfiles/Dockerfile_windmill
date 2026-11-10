@@ -1,0 +1,7 @@
+# Check this website for new images:
+#   *  https://github.com/windmill-labs/windmill/releases
+#
+# For Enterprise Edition, use:
+#   *  ghcr.io/windmill-labs/windmill-ee:main
+ARG IMAGE_VERSION
+FROM ghcr.io/windmill-labs/windmill:${IMAGE_VERSION}

@@ -1,0 +1,8 @@
+# Check this website for new images:
+#   *  https://github.com/mealie-recipes/mealie
+ARG IMAGE_VERSION
+FROM n8nio/n8n:${IMAGE_VERSION}
+
+#RUN apk add --no-cache \
+#    nano \
+#    && rm -f /var/cache/apk/*

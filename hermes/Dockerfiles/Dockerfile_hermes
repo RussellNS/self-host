@@ -1,0 +1,13 @@
+ARG IMAGE_VERSION
+FROM nousresearch/hermes-agent:${IMAGE_VERSION}
+
+# Install optional packages
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends \
+       nano \
+       curl \
+       wget \
+       jq \
+    && apt-get clean \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*

@@ -1,0 +1,111 @@
+ARG IMAGE_VERSION
+FROM ollama/ollama:${IMAGE_VERSION}
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       curl \
+       nano \
+    && rm -rf /var/lib/apt/lists/*
+
+
+
+# -----------------------------------------------------------------------------
+# Create the 'healthcheck.sh' runner Script
+# -----------------------------------------------------------------------------
+# Hard coding the healthcheck script into Dockerfile allows for mobility
+#   *  Only one file (this Dockerfile) is required to spin up this container
+RUN cat <<'EOF' > /healthcheck.sh
+#!/bin/bash
+# healthcheck.sh
+# Validates Ollama API health and GPU placement. If a model is confirmed
+# on CPU (not a transient read), forcibly restarts the ollama_app
+# container via 'pkill ollama'.  This kills process 1, which kills the
+# Ollama container, which will then restart the container (assuming the
+# 'restart: unless-stopped' flag is set).
+
+set -uo pipefail
+
+OLLAMA_HOST="http://localhost:11434"
+
+# ========================================================================== #
+# Number of CPU-placement reads required, and the wait between them, before  #
+# 'pkill ollama' is triggered. This exists only to rule out a read taken     #
+# mid-placement-decision, not to attempt a real unload.                      #
+# ========================================================================== #
+CONFIRM_ATTEMPTS=2
+CONFIRM_WAIT_SECONDS=3
+
+log() {
+    echo "[healthcheck] $(date -u '+%Y-%m-%dT%H:%M:%SZ') $1"
+}
+
+# ========================================================================== #
+# Step 1: API reachability                                                   #
+# ========================================================================== #
+if ! curl -sf "${OLLAMA_HOST}/api/tags" > /dev/null; then
+    log "FAIL: Ollama API not reachable"
+    exit 1
+fi
+
+# ========================================================================== #
+# Step 2: GPU visibility                                                     #
+# ========================================================================== #
+if ! nvidia-smi > /dev/null 2>&1; then
+    log "FAIL: nvidia-smi unavailable, GPU not visible to container"
+    exit 1
+fi
+
+# ========================================================================== #
+# Step 3: Check for any model running on CPU                                 #
+# ========================================================================== #
+check_cpu_models() {
+    ollama ps 2>/dev/null | awk 'NR>1 && $0 ~ /CPU/ {print $1}'
+}
+
+cpu_models="$(check_cpu_models)"
+
+if [ -z "$cpu_models" ]; then
+    log "OK: GPU visible, no models on CPU"
+    exit 0
+fi
+
+log "WARN: model(s) on CPU detected: $cpu_models"
+
+# ========================================================================== #
+# Step 4: Confirm placement before acting                                    #
+# Rule out a transient "CPU" reading before attempting 'pkill ollama'        #                                           ---
+# ========================================================================== #
+attempt=1
+while [ "$attempt" -lt "$CONFIRM_ATTEMPTS" ]; do
+    sleep "$CONFIRM_WAIT_SECONDS"
+    cpu_models="$(check_cpu_models)"
+    if [ -z "$cpu_models" ]; then
+        log "OK: CPU placement resolved on its own by confirm attempt ${attempt}, no action needed"
+        exit 0
+    fi
+    log "CONFIRM: still on CPU at attempt ${attempt}/${CONFIRM_ATTEMPTS}: $cpu_models"
+    attempt=$((attempt + 1))
+done
+
+log "CONFIRMED: model(s) still on CPU after ${CONFIRM_ATTEMPTS} reads: $cpu_models"
+
+# ========================================================================== #
+# Step 5: Force restart                                                      #
+# pkill PID 1 inside this container. Assume Ollama container is run with     #
+# 'restart: unless-stopped' flag.                                            #
+# ========================================================================== #
+log "ACTION: forcing container restart via pkill to clear CPU placement"
+pkill ollama
+
+# ========================================================================== #
+# If pkill did not actually terminate PID 1 for some reason, fall through    #
+# to a final unhealthy report rather than assuming success.                  #
+# ========================================================================== #
+sleep 2
+log "FAIL: pkill issued -- reporting unhealthy in case restart did not occur"
+exit 1
+EOF
+
+
+
+RUN chmod +x /healthcheck.sh

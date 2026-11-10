@@ -1,0 +1,78 @@
+ARG IMAGE_VERSION
+FROM nextcloud:${IMAGE_VERSION}
+
+# Remove Apache startup - not needed
+RUN rm -f /usr/local/bin/apache2-foreground
+
+# Install minimal tools
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        jq \
+        nano \
+    && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------------------------------------
+# Create the 'cron.sh' runner Script
+# -----------------------------------------------------------------------------
+# Hard coding the 'cron.sh' script into Dockerfile allows for mobility
+#   *  Only one file (this Dockerfile) is required to spin up this container
+RUN cat <<'EOF' > /cron.sh
+#!/bin/bash
+
+echo "[nextcloud_cron] Starting cron loop..."
+
+while true; do
+    # Create human readable date/time
+    TS=$(date +"%Y-%m-%d %I:%M:%S%p")
+    echo "[nextcloud_cron] Running cron.php at ${TS}"
+
+    # Run cron.php as the correct user (www-data, UID 33)
+    #runuser -u www-data -- php -f /var/www/html/cron.php
+    php -f /var/www/html/cron.php
+    echo "$(date +%s)" > /var/www/html/data/.cron_last_run
+
+    sleep 60   # 1 minute(s)
+done
+EOF
+
+# Make script executable
+RUN chmod +x /cron.sh
+
+# -----------------------------------------------------------------------------
+# Create the 'healthcheck.sh' runner Script
+# -----------------------------------------------------------------------------
+# Hard coding the 'healthcheck.sh' script into Dockerfile allows for mobility
+#   *  Only one file (this Dockerfile) is required to spin up this container
+
+RUN cat <<'EOF' > /healthcheck.sh
+#!/bin/bash
+
+MARKER="/var/www/html/data/.cron_last_run"
+
+if [ ! -f "$MARKER" ]; then
+    echo "Cron marker file missing"
+    exit 1
+fi
+
+LAST_RUN_EPOCH=$(cat "$MARKER")
+NOW_EPOCH=$(date +%s)
+
+DIFF=$((NOW_EPOCH - LAST_RUN_EPOCH))
+
+# Cron runs every 5 minutes, allow up to 10
+if [ $DIFF -gt 600 ]; then
+    echo "Cron has not run recently"
+    exit 1
+fi
+
+echo "Cron OK (last run: $LAST_RUN_EPOCH)"
+exit 0
+EOF
+
+# Make script executable
+RUN chmod +x /healthcheck.sh
+
+# Run container as www-data (UID 33)
+USER www-data
+
+CMD ["/cron.sh"]

@@ -1,0 +1,9 @@
+# Check this website for new images:
+#   *  https://github.com/mealie-recipes/mealie
+ARG IMAGE_VERSION
+FROM ghcr.io/mealie-recipes/mealie:${IMAGE_VERSION}
+
+RUN apt-get update -y \
+    && apt-get install -y \
+       curl \
+       wget

@@ -1,0 +1,7 @@
+ARG IMAGE_VERSION
+FROM postgres:${IMAGE_VERSION}
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       nano \
+    && rm -rf /var/lib/apt/lists/*
